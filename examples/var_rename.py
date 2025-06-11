@@ -1,12 +1,21 @@
+import os
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable
 
 import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from datasets import Dataset
 
 from iluvattnshun.prompter import PromptConfig, Prompter
+from iluvattnshun.trainer import Trainer, TrainerConfig
+from iluvattnshun.types import TensorTree
 
 
 @dataclass
-class VariableRenamingConfig(PromptConfig):
+class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Configuration for variable renaming prompts.
 
     Parameters:
@@ -16,6 +25,7 @@ class VariableRenamingConfig(PromptConfig):
 
     num_chains: int
     depth: int
+    dataset_path: str
 
 
 class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
@@ -85,7 +95,48 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         return tokens
 
 
+class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
+    def get_model(self) -> nn.Module:
+        raise NotImplementedError("Not implemented")
+
+    def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
+        return optim.Adam(model.parameters(), lr=1e-3)
+
+    def get_loss(self, model: nn.Module, batch: TensorTree) -> torch.Tensor:
+        raise NotImplementedError("Not implemented")
+
+    def get_train_dataloader(self) -> Iterable[TensorTree]:
+        train_path = Path(self.config.dataset_path) / "train"
+        if not os.path.exists(train_path):
+            prompter = VariableRenamingPrompter(self.config)
+            prompter.make_dataset(train_path.as_posix())
+
+        dataset = Dataset.load_from_disk(train_path.as_posix())
+        dataset.set_format(type="torch", columns=["prompt", "answer"])
+        return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+
+    def get_val_dataloader(self) -> Iterable[TensorTree]:
+        val_path = Path(self.config.dataset_path) / "val"
+        if not os.path.exists(val_path):
+            prompter = VariableRenamingPrompter(self.config)
+            prompter.make_dataset(val_path.as_posix())
+
+        dataset = Dataset.load_from_disk(val_path.as_posix())
+        dataset.set_format(type="torch", columns=["prompt", "answer"])
+        return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+
+
 if __name__ == "__main__":
-    config = VariableRenamingConfig(num_prompts=100, num_chains=5, depth=5, seed=42)
-    prompter = VariableRenamingPrompter(config)
-    prompter.make_dataset("data/var_rename")
+    config = VariableRenamingConfig(
+        num_prompts=100,
+        num_chains=5,
+        depth=5,
+        seed=42,
+        num_epochs=10,
+        batch_size=128,
+        log_every_n_seconds=10,
+        log_fp=4,
+        dataset_path="data/var_rename",
+    )
+    trainer = VariableRenamingTrainer(config)
+    trainer.run()

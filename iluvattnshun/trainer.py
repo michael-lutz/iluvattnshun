@@ -73,7 +73,7 @@ class TrainerConfig:
 
     # Logging
     log_every_n_seconds: float
-    log_fp: int = 4
+    log_fp: int
 
 
 ConfigType = TypeVar("ConfigType", bound=TrainerConfig)
