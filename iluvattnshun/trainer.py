@@ -2,14 +2,12 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 from time import time
 from typing import Generic, Iterable, Literal, TypeVar
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from datasets import Dataset
 
 from iluvattnshun.types import TensorTree
 
@@ -78,10 +76,13 @@ class TrainerConfig:
     log_fp: int = 4
 
 
-class Trainer(ABC):
+ConfigType = TypeVar("ConfigType", bound=TrainerConfig)
+
+
+class Trainer(ABC, Generic[ConfigType]):
     """Base trainer class."""
 
-    def __init__(self, config: TrainerConfig):
+    def __init__(self, config: ConfigType):
         """Initialize the trainer."""
         self.config = config
         self.logger = Logger(precision=config.log_fp, log_every_n_seconds=config.log_every_n_seconds)

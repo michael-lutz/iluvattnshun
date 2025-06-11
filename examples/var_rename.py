@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import TypeVar
 
 import numpy as np
 
@@ -19,10 +18,7 @@ class VariableRenamingConfig(PromptConfig):
     depth: int
 
 
-T = TypeVar("T", bound=VariableRenamingConfig)
-
-
-class VariableRenamingPrompter(Prompter[T]):
+class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
     """Prompter for generating variable renaming exercises.
 
     Generates prompts where variables are renamed in chains, and the task
@@ -90,6 +86,6 @@ class VariableRenamingPrompter(Prompter[T]):
 
 
 if __name__ == "__main__":
-    config = VariableRenamingConfig(num_prompts=100, num_chains=5, depth=5)
+    config = VariableRenamingConfig(num_prompts=100, num_chains=5, depth=5, seed=42)
     prompter = VariableRenamingPrompter(config)
     prompter.make_dataset("data/var_rename")
