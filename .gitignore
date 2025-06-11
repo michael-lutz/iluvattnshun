@@ -1,1 +1,6 @@
 scratch/
+data/
+
+__pycache__/
+
+*.egg-info/

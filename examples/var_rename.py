@@ -3,7 +3,7 @@ from typing import TypeVar
 
 import numpy as np
 
-from ..prompter import PromptConfig, Prompter
+from iluvattnshun.prompter import PromptConfig, Prompter
 
 
 @dataclass
@@ -39,7 +39,7 @@ class VariableRenamingPrompter(Prompter[T]):
         """
         assert self.config.num_chains <= 25, "We don't support more than 25 chains."
 
-        chains: list[list[int | str]] = [[np.random.randint(0, 100)] for _ in range(self.config.num_chains)]
+        chains: list[list[int | str]] = [[np.random.randint(0, 10)] for _ in range(self.config.num_chains)]
         prompt = ""
 
         while True:
@@ -53,7 +53,7 @@ class VariableRenamingPrompter(Prompter[T]):
             new_var = np.random.choice([c for c in "abcdefghijklmnopqrstuvwxyz" if c not in most_recent_vars])
             chains[sampled_chain].append(new_var)
 
-            prompt += f"{new_var}={old_var}; "
+            prompt += f"{new_var}={old_var};"
 
         final_var_evals = [(str(chain[-1]), str(chain[0])) for chain in chains]
         var_to_eval = np.random.choice(len(final_var_evals))
@@ -67,7 +67,7 @@ class VariableRenamingPrompter(Prompter[T]):
 
         Maps:
         - Numbers 0-9 -> tokens 0-9
-        - Letters A-Z -> tokens 10-35
+        - Letters a-z -> tokens 10-35
         - '=' -> token 36
         - '?' -> token 37
         - ';' -> token 38
@@ -76,8 +76,8 @@ class VariableRenamingPrompter(Prompter[T]):
         for c in text:
             if c.isdigit():
                 tokens.append(int(c))
-            elif c.isalpha() and c.isupper():
-                tokens.append(ord(c) - ord("A") + 10)
+            elif c.isalpha() and c.islower():
+                tokens.append(ord(c) - ord("a") + 10)
             elif c == "=":
                 tokens.append(36)
             elif c == "?":
@@ -87,3 +87,9 @@ class VariableRenamingPrompter(Prompter[T]):
             else:
                 raise ValueError(f"Unexpected character: {c}")
         return tokens
+
+
+if __name__ == "__main__":
+    config = VariableRenamingConfig(num_prompts=100, num_chains=5, depth=5)
+    prompter = VariableRenamingPrompter(config)
+    prompter.make_dataset("data/var_rename")

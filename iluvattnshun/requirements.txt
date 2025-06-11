@@ -1,0 +1,7 @@
+# requirements.txt
+
+# Utilities
+numpy
+
+# HuggingFace
+datasets

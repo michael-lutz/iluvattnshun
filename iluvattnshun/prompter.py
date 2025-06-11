@@ -29,6 +29,7 @@ class Prompter(ABC, Generic[T]):
     @abstractmethod
     def get_prompt(self) -> tuple[str, str]:
         """Generate a prompt and its expected answer."""
+        # TODO: think about implementing pseudorandomness nicely.
         pass
 
     @abstractmethod
