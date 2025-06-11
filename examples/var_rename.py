@@ -95,15 +95,73 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         return tokens
 
 
+class TransformerLayer(nn.Module):
+    """A single transformer layer."""
+
+    def __init__(self, d_model: int, n_heads: int):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.mlp = nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
+        self.norm2 = nn.LayerNorm(d_model)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the transformer layer."""
+        x_norm = self.norm1(x)  # Pre-LN Xiong et al., 2020 (https://arxiv.org/abs/2002.04745v1)
+        attn_out, _ = self.attention(x_norm, x_norm, x_norm)
+        x = x + attn_out
+        mlp_out = self.mlp(self.norm2(x))
+        x = x + mlp_out
+        return x
+
+
+class MultilayerTransformer(nn.Module):
+    """A multilayer transformer model."""
+
+    def __init__(
+        self, vocab_size: int = 39, d_model: int = 128, n_heads: int = 1, n_layers: int = 4, max_seq_len: int = 100
+    ):
+        super().__init__()
+        self.d_model = d_model
+
+        self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
+        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)  # Scale during initialization
+        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+        self.layers = nn.ModuleList([TransformerLayer(d_model, n_heads) for _ in range(n_layers)])
+        self.output = nn.Linear(d_model, vocab_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through the transformer.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_len)
+
+        Returns:
+            Output logits of shape (batch_size, seq_len, vocab_size)
+        """
+        batch_size, seq_len = x.shape
+
+        pos = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch_size, -1)
+        x = self.token_embedding(x) + self.pos_embedding(pos)
+
+        for layer in self.layers:
+            x = layer(x)
+
+        logits = self.output(x)
+        return logits
+
+
 class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
     def get_model(self) -> nn.Module:
-        raise NotImplementedError("Not implemented")
+        return MultilayerTransformer()
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         return optim.Adam(model.parameters(), lr=1e-3)
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> torch.Tensor:
-        raise NotImplementedError("Not implemented")
+        logits = model(batch["prompt"])[:, -1, :]
+        answer = batch["answer"]
+        return nn.functional.cross_entropy(logits, answer)
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
         train_path = Path(self.config.dataset_path) / "train"
