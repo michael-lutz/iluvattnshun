@@ -12,18 +12,18 @@ class PromptConfig:
     num_prompts: int
 
 
-T = TypeVar("T", bound=PromptConfig)
+ConfigType = TypeVar("ConfigType", bound=PromptConfig)
 
 
-class Prompter(ABC, Generic[T]):
+class Prompter(ABC, Generic[ConfigType]):
     """Base class for prompt generation.
 
     This abstract class defines the interface for prompt generators.
     Subclasses must implement get_prompt and tokenize methods.
     """
 
-    def __init__(self, config: T):
-        """Initialize the prompter with a configuration."""
+    def __init__(self, config: ConfigType):
+        """Initialize the synthesizer with a configuration."""
         self.config = config
 
     @abstractmethod
