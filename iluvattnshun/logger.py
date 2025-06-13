@@ -17,15 +17,15 @@ class Logger:
         self.precision = precision
         self.log_every_n_seconds = log_every_n_seconds
         self.start_time = time()
-        self.step = 0
-        self.last_log_time: dict[Literal["train", "val"], float] = {"train": 0.0, "val": 0.0}
+        self.step: dict[Literal["train", "val"], int] = {"train": 0, "val": 0}
+        self.last_log_time: dict[Literal["train", "val"], float] = {"train": self.start_time, "val": self.start_time}
 
-    def _format_number(self, value: float | int) -> str:
+    def format_number(self, value: float | int) -> str:
         if isinstance(value, int):
             return f"{value:,}"
         return f"{value:.{self.precision}f}"
 
-    def _format_time(self, seconds: float) -> str:
+    def format_time(self, seconds: float) -> str:
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
         seconds = int(seconds % 60)
@@ -35,14 +35,14 @@ class Logger:
             return f"{minutes}m {seconds}s"
         return f"{seconds}s"
 
-    def _get_terminal_size(self) -> tuple[int, int]:
+    def get_terminal_size(self) -> tuple[int, int]:
         try:
             size = shutil.get_terminal_size()
             return size.columns, size.lines
         except Exception:
             return 80, 24
 
-    def log(self, metrics: dict[str, float], mode: Literal["train", "val"]) -> None:
+    def log(self, metrics: dict[str, float | str], mode: Literal["train", "val"]) -> None:
         """Log metrics to the console.
 
         Args:
@@ -55,22 +55,26 @@ class Logger:
         iter_time = curr_time - self.last_log_time[mode]
         self.last_log_time[mode] = curr_time
 
-        self.step += 1
+        self.step[mode] += 1
         mode_color = Fore.GREEN if mode == "train" else Fore.YELLOW
         mode_str = f"{mode_color}{mode.upper():<5}{Style.RESET_ALL}"
-        elapsed_str = f"{Fore.CYAN}{self._format_time(time() - self.start_time)}{Style.RESET_ALL}"
-        step_str = f"{Fore.MAGENTA}Step {self.step:,}{Style.RESET_ALL}"
+        elapsed_str = f"{Fore.CYAN}{self.format_time(time() - self.start_time)}{Style.RESET_ALL}"
+        step_str = f"{Fore.MAGENTA}Step {self.step[mode]:,}{Style.RESET_ALL}"
         iter_str = f"{Fore.MAGENTA}Iter {iter_time:.2f}s{Style.RESET_ALL}"
 
-        term_width, term_height = self._get_terminal_size()
+        term_width, term_height = self.get_terminal_size()
 
         header = f"{mode_str} | {step_str} | {iter_str} | Time: {elapsed_str}"
         horizontal_rule = f"{Fore.BLUE}{'─' * term_width}{Style.RESET_ALL}"
 
-        metric_lines = [
-            f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}{self._format_number(value)}{Style.RESET_ALL}"
-            for name, value in metrics.items()
-        ]
+        metric_lines = []
+        for name, value in metrics.items():
+            if isinstance(value, float):
+                metric_lines.append(
+                    f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}{self.format_number(value)}{Style.RESET_ALL}"
+                )
+            else:
+                metric_lines.append(f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}{value}{Style.RESET_ALL}")
 
         frame = [horizontal_rule, header.center(term_width), horizontal_rule]
         frame.extend(metric_lines)
