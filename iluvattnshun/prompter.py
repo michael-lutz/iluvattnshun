@@ -1,17 +1,32 @@
+import hashlib
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 import numpy as np
-from datasets import Dataset
+from datasets import Dataset, DatasetInfo, Features, Sequence, Value
 
 
-@dataclass
+@dataclass(kw_only=True)
 class PromptConfig:
     """Base configuration class for prompt generation."""
 
     num_prompts: int
-    seed: int
+    seed: int = 42
+
+    def __str__(self) -> str:
+        """String representation of the config."""
+        items = sorted(self.__dict__.items())
+        res = "{"
+        for k, v in items:
+            res += f"\t{k}={v}\n"
+        res += "}"
+        return res
+
+    def __hash__(self) -> int:
+        """Generate a hash of the config for dataset versioning."""
+        return int(hashlib.sha256(str(self).encode()).hexdigest(), 16)
 
 
 ConfigType = TypeVar("ConfigType", bound=PromptConfig)
@@ -26,6 +41,7 @@ class Prompter(ABC, Generic[ConfigType]):
 
     def __init__(self, config: ConfigType):
         """Initialize the synthesizer with a configuration."""
+        assert isinstance(config, PromptConfig), f"Config must inherit from PromptConfig, got {type(config)}"
         self.config = config
 
     @abstractmethod
@@ -64,13 +80,25 @@ class Prompter(ABC, Generic[ConfigType]):
             prompt_tokens.append(self.tokenize(prompt))
             answer_tokens.append(self.tokenize(answer))
 
+        info = DatasetInfo(
+            description=str(self.config),
+            features=Features(
+                {
+                    "prompt": Value("string"),
+                    "answer": Value("string"),
+                    "prompt_tokens": Sequence(feature=Value("int32")),
+                    "answer_tokens": Sequence(feature=Value("int32")),
+                }
+            ),
+        )
+
         dataset = Dataset.from_dict(
             {
                 "prompt": prompts,
                 "answer": answers,
                 "prompt_tokens": prompt_tokens,
                 "answer_tokens": answer_tokens,
-            }
+            },
+            info=info,
         )
-
         dataset.save_to_disk(path)
