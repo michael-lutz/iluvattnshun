@@ -16,16 +16,14 @@ from iluvattnshun.types import TensorTree
 
 @dataclass
 class VariableRenamingConfig(PromptConfig, TrainerConfig):
-    """Configuration for variable renaming prompts.
-
-    Parameters:
-        num_chains: Number of independent renaming chains
-        depth: Maximum variable renaming chain length
-    """
+    """Configuration for variable renaming prompts."""
 
     num_chains: int
-    depth: int
+    """Number of independent renaming chains."""
+    chain_length: int
+    """Maximum length of a renaming chain."""
     dataset_path: str
+    """Path to the dataset."""
 
 
 class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
@@ -49,7 +47,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         prompt = ""
 
         while True:
-            unfilled_chains = [i for i in range(self.config.num_chains) if len(chains[i]) < self.config.depth + 1]
+            unfilled_chains = [i for i in range(self.config.num_chains) if len(chains[i]) < self.config.chain_length]
             if len(unfilled_chains) == 0:
                 break
 
@@ -147,53 +145,71 @@ class MultilayerTransformer(nn.Module):
         for layer in self.layers:
             x = layer(x)
 
-        logits = self.output(x)
+        logits: torch.Tensor = self.output(x)
         return logits
 
 
 class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
     def get_model(self) -> nn.Module:
-        return MultilayerTransformer()
+        """Get the model."""
+        return MultilayerTransformer(n_layers=3)
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
+        """Returns a basic Adam optimizer."""
         return optim.Adam(model.parameters(), lr=1e-3)
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> torch.Tensor:
-        logits = model(batch["prompt_tokens"])[:, -1, :]
-        answer = batch["answer_tokens"]
+        """Returns the cross-entropy loss over the final token logits."""
+        logits = model(batch["prompt_tokens"])[:, -1, :]  # (batch_size, vocab_size)
+        answer = batch["answer_tokens"].squeeze()  # (batch_size,)
         return nn.functional.cross_entropy(logits, answer)
 
+    def validation_metrics(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
+        """Get additional validation metrics for a batch."""
+        sample_input = batch["prompt_tokens"][:1]
+        input_prompt = batch["prompt"][0]
+        true_answer = batch["answer"][0]
+        logits: torch.Tensor = model(sample_input)[0, -1, :]
+        predicted_answer = logits.argmax(dim=-1)
+        probability = torch.softmax(logits, dim=-1)[predicted_answer]
+        return {
+            "input_prompt": input_prompt,
+            "true_answer": true_answer,
+            "predicted_answer": str(predicted_answer.item()),
+            "probability": probability.item(),
+        }
+
     def get_train_dataloader(self) -> Iterable[TensorTree]:
+        """Get the train dataloader."""
         train_path = Path(self.config.dataset_path) / "train"
         if not os.path.exists(train_path):
             prompter = VariableRenamingPrompter(self.config)
             prompter.make_dataset(train_path.as_posix())
 
         dataset = Dataset.load_from_disk(train_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens"])
+        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
         return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
 
     def get_val_dataloader(self) -> Iterable[TensorTree]:
+        """Get the val dataloader."""
         val_path = Path(self.config.dataset_path) / "val"
         if not os.path.exists(val_path):
             prompter = VariableRenamingPrompter(self.config)
             prompter.make_dataset(val_path.as_posix())
 
         dataset = Dataset.load_from_disk(val_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens"])
+        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
         return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
 
 
 if __name__ == "__main__":
     config = VariableRenamingConfig(
-        num_prompts=100,
+        num_prompts=1000,
         num_chains=5,
-        depth=5,
-        seed=42,
-        num_epochs=10,
+        chain_length=5,
+        num_epochs=1000,
         batch_size=128,
-        log_every_n_seconds=10,
-        log_fp=4,
+        log_every_n_seconds=1,
         dataset_path="data/var_rename",
     )
     trainer = VariableRenamingTrainer(config)
