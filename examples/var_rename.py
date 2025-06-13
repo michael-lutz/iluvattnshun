@@ -119,7 +119,7 @@ class MultilayerTransformer(nn.Module):
     """A multilayer transformer model."""
 
     def __init__(
-        self, vocab_size: int = 39, d_model: int = 128, n_heads: int = 1, n_layers: int = 4, max_seq_len: int = 100
+        self, vocab_size: int = 39, d_model: int = 128, n_heads: int = 1, n_layers: int = 4, max_seq_len: int = 102
     ):
         super().__init__()
         self.d_model = d_model
@@ -159,8 +159,8 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         return optim.Adam(model.parameters(), lr=1e-3)
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> torch.Tensor:
-        logits = model(batch["prompt"])[:, -1, :]
-        answer = batch["answer"]
+        logits = model(batch["prompt_tokens"])[:, -1, :]
+        answer = batch["answer_tokens"]
         return nn.functional.cross_entropy(logits, answer)
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
@@ -170,7 +170,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
             prompter.make_dataset(train_path.as_posix())
 
         dataset = Dataset.load_from_disk(train_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt", "answer"])
+        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens"])
         return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
 
     def get_val_dataloader(self) -> Iterable[TensorTree]:
@@ -180,7 +180,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
             prompter.make_dataset(val_path.as_posix())
 
         dataset = Dataset.load_from_disk(val_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt", "answer"])
+        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens"])
         return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
 
 
