@@ -18,6 +18,10 @@ from iluvattnshun.types import TensorTree
 class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Configuration for variable renaming prompts."""
 
+    train_size: int
+    """Number of training examples."""
+    val_size: int
+    """Number of validation examples."""
     num_chains: int
     """Number of independent renaming chains."""
     chain_length: int
@@ -152,7 +156,8 @@ class MultilayerTransformer(nn.Module):
 class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
     def get_model(self) -> nn.Module:
         """Get the model."""
-        return MultilayerTransformer(n_layers=3)
+        max_seq_len = self.config.chain_length * self.config.num_chains * 4 + 2
+        return MultilayerTransformer(n_layers=9, max_seq_len=max_seq_len)
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Returns a basic Adam optimizer."""
@@ -184,7 +189,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         train_path = Path(self.config.dataset_path) / "train"
         if not os.path.exists(train_path):
             prompter = VariableRenamingPrompter(self.config)
-            prompter.make_dataset(train_path.as_posix())
+            prompter.make_dataset(train_path.as_posix(), size=self.config.train_size, seed=24)
 
         dataset = Dataset.load_from_disk(train_path.as_posix())
         dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
@@ -195,22 +200,24 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         val_path = Path(self.config.dataset_path) / "val"
         if not os.path.exists(val_path):
             prompter = VariableRenamingPrompter(self.config)
-            prompter.make_dataset(val_path.as_posix())
+            prompter.make_dataset(val_path.as_posix(), size=self.config.val_size, seed=42)
 
         dataset = Dataset.load_from_disk(val_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
+        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tertokens", "prompt", "answer"])
         return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
 
 
 if __name__ == "__main__":
     config = VariableRenamingConfig(
-        num_prompts=1000,
-        num_chains=5,
-        chain_length=5,
+        train_size=100000,
+        val_size=1000,
+        num_chains=2,
+        chain_length=3,
         num_epochs=1000,
         batch_size=128,
         log_every_n_seconds=1,
         dataset_path="data/var_rename",
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
     trainer = VariableRenamingTrainer(config)
     trainer.run()

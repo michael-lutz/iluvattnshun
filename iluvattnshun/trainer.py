@@ -1,18 +1,16 @@
 """Base trainer class."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from dataclasses import dataclass
-from time import time
-from typing import Generic, Iterable, Iterator, Literal, TypeVar
+from typing import Generic, Iterable, TypeVar
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
 from iluvattnshun.logger import Logger
 from iluvattnshun.types import TensorTree
+from iluvattnshun.utils import move_to_device
 
 
 @dataclass(kw_only=True)
@@ -24,6 +22,8 @@ class TrainerConfig:
     """Number of training epochs. If -1, training will continue indefinitely."""
     batch_size: int
     """Batch size."""
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    """Device to use for training."""
 
     # Logging
     log_every_n_seconds: float = 30.0
@@ -88,7 +88,7 @@ class Trainer(ABC, Generic[ConfigType]):
 
     def run(self) -> None:
         """Creates or loads training variables and begins training."""
-        model = self.get_model()
+        model = self.get_model().to(self.config.device)
         optimizer = self.get_optimizer(model)
         train_loader = self.get_train_dataloader()
         val_loader = self.get_val_dataloader()
@@ -97,6 +97,7 @@ class Trainer(ABC, Generic[ConfigType]):
             # Clasic batched training loop
             model.train()
             for batch in train_loader:
+                batch = move_to_device(batch, self.config.device)
                 metrics = self.train_step(model, optimizer, batch)
                 self.logger.log({"epoch": epoch, **metrics}, mode="train")
 
@@ -105,6 +106,7 @@ class Trainer(ABC, Generic[ConfigType]):
             eval_metrics: dict[str, float | str] = {}
             eval_size = 0
             for batch in val_loader:
+                batch = move_to_device(batch, self.config.device)
                 metrics = self.val_step(model, batch)
                 eval_metrics = {
                     k: eval_metrics.get(k, 0) + v if isinstance(v, float) else v for k, v in metrics.items()

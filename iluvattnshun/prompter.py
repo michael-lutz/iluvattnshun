@@ -1,5 +1,4 @@
 import hashlib
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Generic, TypeVar
@@ -11,9 +10,6 @@ from datasets import Dataset, DatasetInfo, Features, Sequence, Value
 @dataclass(kw_only=True)
 class PromptConfig:
     """Base configuration class for prompt generation."""
-
-    num_prompts: int
-    seed: int = 42
 
     def __str__(self) -> str:
         """String representation of the config."""
@@ -41,7 +37,6 @@ class Prompter(ABC, Generic[ConfigType]):
 
     def __init__(self, config: ConfigType):
         """Initialize the synthesizer with a configuration."""
-        assert isinstance(config, PromptConfig), f"Config must inherit from PromptConfig, got {type(config)}"
         self.config = config
 
     @abstractmethod
@@ -61,19 +56,20 @@ class Prompter(ABC, Generic[ConfigType]):
         """
         pass
 
-    def make_dataset(self, path: str) -> None:
+    def make_dataset(self, path: str, size: int, seed: int = 42) -> None:
         """Generate a HuggingFace dataset of prompts and answers with config.
 
         Args:
             path: Path to save the dataset to.
+            seed: Seed for the random number generator.
         """
         prompts = []
         answers = []
         prompt_tokens = []
         answer_tokens = []
-        np.random.seed(self.config.seed)  # If ever do multiproc, rethink...
+        np.random.seed(seed)  # If ever do multiproc, rethink...
 
-        for _ in range(self.config.num_prompts):
+        for _ in range(size):
             prompt, answer = self.get_prompt()
             prompts.append(prompt)
             answers.append(answer)
