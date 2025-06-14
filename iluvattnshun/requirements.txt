@@ -1,5 +1,5 @@
-# Utilities
 numpy
-
-# HuggingFace
+colorama
 datasets
+mypy
+torch

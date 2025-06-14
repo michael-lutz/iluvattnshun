@@ -22,6 +22,8 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Number of training examples."""
     val_size: int
     """Number of validation examples."""
+    num_layers: int
+    """Number of transformer layers."""
     num_chains: int
     """Number of independent renaming chains."""
     chain_length: int
@@ -157,7 +159,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
     def get_model(self) -> nn.Module:
         """Get the model."""
         max_seq_len = self.config.chain_length * self.config.num_chains * 4 + 2
-        return MultilayerTransformer(n_layers=9, max_seq_len=max_seq_len)
+        return MultilayerTransformer(n_layers=self.config.num_layers, max_seq_len=max_seq_len)
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Returns a basic Adam optimizer."""
@@ -203,7 +205,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
             prompter.make_dataset(val_path.as_posix(), size=self.config.val_size, seed=42)
 
         dataset = Dataset.load_from_disk(val_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tertokens", "prompt", "answer"])
+        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
         return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
 
 
@@ -211,10 +213,11 @@ if __name__ == "__main__":
     config = VariableRenamingConfig(
         train_size=100000,
         val_size=1000,
+        num_layers=4,
         num_chains=2,
         chain_length=3,
         num_epochs=1000,
-        batch_size=128,
+        batch_size=128 * 64,
         log_every_n_seconds=1,
         dataset_path="data/var_rename",
         device="cuda" if torch.cuda.is_available() else "cpu",

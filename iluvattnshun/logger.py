@@ -50,17 +50,17 @@ class Logger:
             mode: Mode to log (currently only train and val are supported)
         """
         curr_time = time()
+        self.step[mode] += 1
         if curr_time - self.last_log_time[mode] < self.log_every_n_seconds:
             return
         iter_time = curr_time - self.last_log_time[mode]
         self.last_log_time[mode] = curr_time
 
-        self.step[mode] += 1
         mode_color = Fore.GREEN if mode == "train" else Fore.YELLOW
         mode_str = f"{mode_color}{mode.upper():<5}{Style.RESET_ALL}"
         elapsed_str = f"{Fore.CYAN}{self.format_time(time() - self.start_time)}{Style.RESET_ALL}"
-        step_str = f"{Fore.MAGENTA}Step {self.step[mode]:,}{Style.RESET_ALL}"
-        iter_str = f"{Fore.MAGENTA}Iter {iter_time:.2f}s{Style.RESET_ALL}"
+        step_str = f"{Fore.CYAN}Step {self.step[mode]:,}{Style.RESET_ALL}"
+        iter_str = f"{Fore.CYAN}Iter {iter_time:.2f}s{Style.RESET_ALL}"
 
         term_width, term_height = self.get_terminal_size()
 
