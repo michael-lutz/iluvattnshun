@@ -179,7 +179,8 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         sample_predicted_answer = predicted_answers[0]
         sample_probability = torch.softmax(preds[0], dim=-1)[sample_predicted_answer]
 
-        total_accuracy = torch.mean(torch.eq(predicted_answers, batch["answer_tokens"]).float()).item()
+        target = batch["answer_tokens"].to(predicted_answers.device)
+        total_accuracy = torch.mean((predicted_answers == target).float()).item()
         return {
             "sample_prompt": sample_prompt,
             "sample_answer": sample_answer,
@@ -226,6 +227,7 @@ if __name__ == "__main__":
         batch_size=1024,
         log_every_n_seconds=1,
         dataset_path="data/var_rename",
+        tensorboard_logdir="logs/var_rename",
         device="cuda" if torch.cuda.is_available() else "cpu",
     )
     trainer = VariableRenamingTrainer(config)

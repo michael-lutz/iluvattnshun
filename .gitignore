@@ -1,5 +1,6 @@
 scratch/
 data/
+logs/
 
 __pycache__/
 

@@ -30,6 +30,8 @@ class TrainerConfig:
     """Log every n seconds."""
     log_fp: int = 4
     """Log float precision."""
+    tensorboard_logdir: str | None = None
+    """Tensorboard log directory."""
 
 
 ConfigType = TypeVar("ConfigType", bound=TrainerConfig)
@@ -41,7 +43,11 @@ class Trainer(ABC, Generic[ConfigType]):
     def __init__(self, config: ConfigType):
         """Initialize the trainer."""
         self.config = config
-        self.logger = Logger(precision=config.log_fp, log_every_n_seconds=config.log_every_n_seconds)
+        self.logger = Logger(
+            precision=config.log_fp,
+            log_every_n_seconds=config.log_every_n_seconds,
+            tensorboard_logdir=config.tensorboard_logdir,
+        )
 
     @abstractmethod
     def get_model(self) -> nn.Module:
