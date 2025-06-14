@@ -42,7 +42,6 @@ class Trainer(ABC, Generic[ConfigType]):
         """Initialize the trainer."""
         self.config = config
         self.logger = Logger(precision=config.log_fp, log_every_n_seconds=config.log_every_n_seconds)
-        self.step = 0
 
     @abstractmethod
     def get_model(self) -> nn.Module:
@@ -53,10 +52,10 @@ class Trainer(ABC, Generic[ConfigType]):
         """Get the optimizer."""
 
     @abstractmethod
-    def get_loss(self, model: nn.Module, batch: TensorTree) -> torch.Tensor:
-        """Get loss for a batch."""
+    def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
+        """Get loss and predictions for a batch."""
 
-    def validation_metrics(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
+    def validation_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """(Optional) Get additional validation metrics for a batch."""
         return {}
 
@@ -73,7 +72,7 @@ class Trainer(ABC, Generic[ConfigType]):
         # TODO: think about ownership of .train and .zero_grad for safe override
         assert model.training, "Model must be in training mode"
         optimizer.zero_grad()
-        loss = self.get_loss(model, batch)
+        loss, preds = self.get_loss(model, batch)
         loss.backward()
         optimizer.step()
         return {"loss": loss.item()}
@@ -81,9 +80,9 @@ class Trainer(ABC, Generic[ConfigType]):
     def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
         """Returns eval metrics."""
         assert not model.training, "Model must be in evaluation mode"
-        loss = self.get_loss(model, batch)
+        loss, preds = self.get_loss(model, batch)
         metrics: dict[str, float | str] = {"loss": loss.item()}
-        metrics.update(self.validation_metrics(model, batch))
+        metrics.update(self.validation_metrics(model, batch, preds))
         return metrics
 
     def run(self) -> None:
@@ -93,13 +92,18 @@ class Trainer(ABC, Generic[ConfigType]):
         train_loader = self.get_train_dataloader()
         val_loader = self.get_val_dataloader()
 
-        def inner_train_loop(epoch: int) -> None:
+        epoch_dec = self.config.num_epochs
+        training_samples = 0
+        while epoch_dec != 0:
+            epoch = self.config.num_epochs - epoch_dec
+
             # Clasic batched training loop
             model.train()
             for batch in train_loader:
+                training_samples += self.config.batch_size
                 batch = move_to_device(batch, self.config.device)
                 metrics = self.train_step(model, optimizer, batch)
-                self.logger.log({"epoch": epoch, **metrics}, mode="train")
+                self.logger.log(metrics, mode="train", header={"epoch": epoch, "samples": training_samples})
 
             # Running eval every epoch and combining metrics over all batches
             model.eval()
@@ -114,13 +118,5 @@ class Trainer(ABC, Generic[ConfigType]):
                 eval_size += 1
 
             eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}
-            self.logger.log({"epoch": epoch, **eval_metrics}, mode="val")
-
-            self.step += 1
-
-        if self.config.num_epochs == -1:
-            while True:
-                inner_train_loop(-1)
-        else:
-            for epoch in range(self.config.num_epochs):
-                inner_train_loop(epoch)
+            self.logger.log(eval_metrics, mode="val", header={"epoch": epoch, "samples": training_samples})
+            epoch_dec -= 1

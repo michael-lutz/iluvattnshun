@@ -42,14 +42,21 @@ class Logger:
         except Exception:
             return 80, 24
 
-    def log(self, metrics: dict[str, float | str], mode: Literal["train", "val"]) -> None:
+    def log(
+        self,
+        metrics: dict[str, float | str],
+        mode: Literal["train", "val"],
+        header: dict[str, float | str] | None = None,
+    ) -> None:
         """Log metrics to the console.
 
         Args:
             metrics: Format {name: float value}
             mode: Mode to log (currently only train and val are supported)
+            header: Extra info to log at the top of the log (e.g. epoch, num_samples, etc.)
         """
         curr_time = time()
+        term_width, term_height = self.get_terminal_size()
         self.step[mode] += 1
         if curr_time - self.last_log_time[mode] < self.log_every_n_seconds:
             return
@@ -58,13 +65,13 @@ class Logger:
 
         mode_color = Fore.GREEN if mode == "train" else Fore.YELLOW
         mode_str = f"{mode_color}{mode.upper():<5}{Style.RESET_ALL}"
-        elapsed_str = f"{Fore.CYAN}{self.format_time(time() - self.start_time)}{Style.RESET_ALL}"
-        step_str = f"{Fore.CYAN}Step {self.step[mode]:,}{Style.RESET_ALL}"
-        iter_str = f"{Fore.CYAN}Iter {iter_time:.2f}s{Style.RESET_ALL}"
+        elapsed_str = f"Time: {Fore.CYAN}{self.format_time(time() - self.start_time)}{Style.RESET_ALL}"
+        step_str = f"Step: {Fore.CYAN}{self.step[mode]:,}{Style.RESET_ALL}"
+        iter_str = f"Iter: {Fore.CYAN}{iter_time:.2f}s{Style.RESET_ALL}"
 
-        term_width, term_height = self.get_terminal_size()
-
-        header = f"{mode_str} | {step_str} | {iter_str} | Time: {elapsed_str}"
+        header_str = f"{mode_str} | {step_str} | {iter_str} | {elapsed_str}"
+        if header:
+            header_str += " | " + " | ".join([f"{k}: {Fore.CYAN}{v}{Style.RESET_ALL}" for k, v in header.items()])
         horizontal_rule = f"{Fore.BLUE}{'─' * term_width}{Style.RESET_ALL}"
 
         metric_lines = []
@@ -76,7 +83,7 @@ class Logger:
             else:
                 metric_lines.append(f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}{value}{Style.RESET_ALL}")
 
-        frame = [horizontal_rule, header.center(term_width), horizontal_rule]
+        frame = [horizontal_rule, header_str, horizontal_rule]
         frame.extend(metric_lines)
 
         while len(frame) < term_height - 1:

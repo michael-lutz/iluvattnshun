@@ -165,25 +165,27 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         """Returns a basic Adam optimizer."""
         return optim.Adam(model.parameters(), lr=1e-3)
 
-    def get_loss(self, model: nn.Module, batch: TensorTree) -> torch.Tensor:
+    def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the cross-entropy loss over the final token logits."""
         logits = model(batch["prompt_tokens"])[:, -1, :]  # (batch_size, vocab_size)
         answer = batch["answer_tokens"].squeeze()  # (batch_size,)
-        return nn.functional.cross_entropy(logits, answer)
+        return nn.functional.cross_entropy(logits, answer), logits
 
-    def validation_metrics(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
+    def validation_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """Get additional validation metrics for a batch."""
-        sample_input = batch["prompt_tokens"][:1]
-        input_prompt = batch["prompt"][0]
-        true_answer = batch["answer"][0]
-        logits: torch.Tensor = model(sample_input)[0, -1, :]
-        predicted_answer = logits.argmax(dim=-1)
-        probability = torch.softmax(logits, dim=-1)[predicted_answer]
+        predicted_answers = preds.argmax(dim=-1)
+        sample_prompt = batch["prompt"][0]
+        sample_answer = batch["answer"][0]
+        sample_predicted_answer = predicted_answers[0]
+        sample_probability = torch.softmax(preds[0], dim=-1)[sample_predicted_answer]
+
+        total_accuracy = torch.mean(torch.eq(predicted_answers, batch["answer_tokens"]).float()).item()
         return {
-            "input_prompt": input_prompt,
-            "true_answer": true_answer,
-            "predicted_answer": str(predicted_answer.item()),
-            "probability": probability.item(),
+            "sample_prompt": sample_prompt,
+            "sample_answer": sample_answer,
+            "predicted_answer": str(sample_predicted_answer.item()),
+            "probability": sample_probability.item(),
+            "accuracy": total_accuracy,
         }
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
@@ -217,7 +219,7 @@ if __name__ == "__main__":
         num_chains=2,
         chain_length=3,
         num_epochs=1000,
-        batch_size=128 * 64,
+        batch_size=8192,
         log_every_n_seconds=1,
         dataset_path="data/var_rename",
         device="cuda" if torch.cuda.is_available() else "cpu",
