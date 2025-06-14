@@ -197,7 +197,9 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
         dataset = Dataset.load_from_disk(train_path.as_posix())
         dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
-        return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        return torch.utils.data.DataLoader(
+            dataset, batch_size=self.config.batch_size, shuffle=True, prefetch_factor=4, num_workers=4
+        )
 
     def get_val_dataloader(self) -> Iterable[TensorTree]:
         """Get the val dataloader."""
@@ -208,7 +210,9 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
         dataset = Dataset.load_from_disk(val_path.as_posix())
         dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
-        return torch.utils.data.DataLoader(dataset, batch_size=self.config.batch_size, shuffle=True)
+        return torch.utils.data.DataLoader(
+            dataset, batch_size=self.config.batch_size, shuffle=True, prefetch_factor=4, num_workers=4
+        )
 
 
 if __name__ == "__main__":
@@ -219,7 +223,7 @@ if __name__ == "__main__":
         num_chains=2,
         chain_length=3,
         num_epochs=1000,
-        batch_size=8192,
+        batch_size=1024,
         log_every_n_seconds=1,
         dataset_path="data/var_rename",
         device="cuda" if torch.cuda.is_available() else "cpu",
