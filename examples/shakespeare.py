@@ -2,12 +2,11 @@
 
 import math
 from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple
+from typing import Iterable
 
-import tensorflow_datasets as tfds
+import tensorflow_datasets as tfds  # type: ignore
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 
 from iluvattnshun.nn import MultilayerTransformer
@@ -116,7 +115,9 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
         """Training with IID sampling (indefinitely)."""
         while True:
             idx = torch.randint(
-                0, self.train_token_ids.shape[0] - self.config.max_context_length - 1, (self.config.batch_size,)
+                0,
+                self.train_token_ids.shape[0] - self.config.max_context_length - 1,
+                (self.config.batch_size,),
             )
             windows = idx.unsqueeze(1) + torch.arange(self.config.max_context_length)
             yield {

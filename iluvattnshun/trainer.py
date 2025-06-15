@@ -140,13 +140,21 @@ class Trainer(ABC, Generic[ConfigType]):
                     # average the float metrics
                     eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}
                     eval_metrics.update(self.post_val_metrics(model))
-                    self.logger.log(eval_metrics, mode="val", header={"epoch": epoch, "samples": training_samples})
+                    self.logger.log(
+                        eval_metrics,
+                        mode="val",
+                        header={"epoch": epoch, "samples": training_samples},
+                    )
                     eval_steps += 1
                 # classic train step
                 model.train()
                 training_samples += self.config.batch_size
                 batch = move_to_device(batch, self.config.device)
                 metrics = self.train_step(model, optimizer, batch)
-                self.logger.log(metrics, mode="train", header={"epoch": epoch, "samples": training_samples})
+                self.logger.log(
+                    metrics,
+                    mode="train",
+                    header={"epoch": epoch, "samples": training_samples},
+                )
 
             epoch_dec -= 1

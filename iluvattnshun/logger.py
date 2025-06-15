@@ -6,7 +6,7 @@ from typing import Literal
 
 from colorama import Fore, Style
 from colorama import init as colorama_init
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 
 colorama_init(autoreset=True)
 

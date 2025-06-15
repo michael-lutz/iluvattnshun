@@ -1,15 +1,12 @@
 """Variable renaming datagen and training w/ pre-LN transformer."""
 
-import os
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Iterable
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from datasets import Dataset
 
 from iluvattnshun.nn import MultilayerTransformer
 from iluvattnshun.prompter import PromptConfig, Prompter
@@ -194,7 +191,7 @@ if __name__ == "__main__":
         train_size=100000,
         test_size=1000,
         num_chains=2,
-        chain_length=3,
+        chain_length=5,
         num_epochs=1000,
         batch_size=1024,
         eval_every_n_samples=1000000,

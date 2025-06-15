@@ -36,7 +36,11 @@ class Attention(nn.Module):
         kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         return_attn_weights: bool = False,
         return_new_kv_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+    ) -> Tuple[
+        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[Tuple[torch.Tensor, torch.Tensor]],
+    ]:
         """Forward pass through the attention layer.
         Args:
             query: Query tensor of shape (batch_size, seq_len, embed_dim)
@@ -155,7 +159,14 @@ class TransformerLayer(nn.Module):
 class MultilayerTransformer(nn.Module):
     """A multilayer transformer model."""
 
-    def __init__(self, vocab_size: int, d_model: int, n_heads: int, n_layers: int, max_seq_len: int):
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int,
+        n_heads: int,
+        n_layers: int,
+        max_seq_len: int,
+    ):
         super().__init__()
         self.d_model = d_model
 
@@ -171,7 +182,11 @@ class MultilayerTransformer(nn.Module):
         kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
         return_attn_weights: bool = False,
         return_new_kv_cache: bool = False,
-    ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]] | None, list[torch.Tensor] | None]:
+    ) -> tuple[
+        torch.Tensor,
+        list[tuple[torch.Tensor, torch.Tensor]] | None,
+        list[torch.Tensor] | None,
+    ]:
         """Forward pass through the transformer.
 
         Args:
@@ -193,12 +208,15 @@ class MultilayerTransformer(nn.Module):
         for i, layer in enumerate(self.layers):
             layer_kv_cache = kv_cache[i] if kv_cache is not None else None
             x, layer_attn_weights, layer_kv_cache = layer(
-                x, layer_kv_cache, return_attn_weights=return_attn_weights, return_new_kv_cache=return_new_kv_cache
+                x,
+                layer_kv_cache,
+                return_attn_weights=return_attn_weights,
+                return_new_kv_cache=return_new_kv_cache,
             )
 
-            if return_new_kv_cache and new_kv_cache is not None:
+            if return_new_kv_cache and new_kv_cache is not None and layer_kv_cache is not None:
                 new_kv_cache.append(layer_kv_cache)
-            if return_attn_weights and attn_weights is not None:
+            if return_attn_weights and attn_weights is not None and layer_attn_weights is not None:
                 attn_weights.append(layer_attn_weights)
 
         logits: torch.Tensor = self.output(x)
