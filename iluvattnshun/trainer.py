@@ -1,7 +1,9 @@
 """Base trainer class."""
 
+import os
+import sys
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Generic, Iterable, TypeVar
 
 import torch
@@ -32,7 +34,7 @@ class TrainerConfig:
     """Log every n seconds."""
     log_fp: int = 4
     """Log float precision."""
-    tensorboard_logdir: str | None = None
+    tensorboard_logdir: str
     """Tensorboard log directory."""
 
 
@@ -46,10 +48,25 @@ class Trainer(ABC, Generic[ConfigType]):
         """Initialize the trainer."""
         self.config = config
         self.logger = Logger(
+            tensorboard_logdir=config.tensorboard_logdir,
             precision=config.log_fp,
             log_every_n_seconds=config.log_every_n_seconds,
-            tensorboard_logdir=config.tensorboard_logdir,
         )
+
+        # log the config
+        config_dict = asdict(config)
+        config_text = "\n".join(f"{k}: {v}" for k, v in config_dict.items())
+        self.logger.log_text("config.yaml", config_text)
+
+        # log the script
+        main_module = sys.modules["__main__"]
+        if hasattr(main_module, "__file__"):
+            main_file = main_module.__file__
+            if main_file is not None:
+                script_name = self.logger.run_name + ".py"
+                script_text = open(main_file, "r").read()
+                self.logger.log_text(script_name, script_text, save_to_file=True)
+
         self.init_state()
 
     def init_state(self) -> None:
@@ -140,18 +157,19 @@ class Trainer(ABC, Generic[ConfigType]):
                     # average the float metrics
                     eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}
                     eval_metrics.update(self.post_val_metrics(model))
-                    self.logger.log(
+                    self.logger.log_metrics(
                         eval_metrics,
                         mode="val",
                         header={"epoch": epoch, "samples": training_samples},
                     )
                     eval_steps += 1
+
                 # classic train step
                 model.train()
                 training_samples += self.config.batch_size
                 batch = move_to_device(batch, self.config.device)
                 metrics = self.train_step(model, optimizer, batch)
-                self.logger.log(
+                self.logger.log_metrics(
                     metrics,
                     mode="train",
                     header={"epoch": epoch, "samples": training_samples},

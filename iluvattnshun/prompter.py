@@ -1,3 +1,5 @@
+"""Prompt generation and dataset generation."""
+
 import hashlib
 import os
 from abc import ABC, abstractmethod
@@ -30,6 +32,10 @@ class PromptConfig:
         return res
 
     def __hash__(self) -> int:
+        """Generate a hash of the config for dataset versioning."""
+        return self.get_hash()
+
+    def get_hash(self) -> int:
         """Generate a hash of the config for dataset versioning."""
         return int(hashlib.sha256(str(self).encode()).hexdigest(), 16)
 
@@ -65,6 +71,11 @@ class Prompter(ABC, Generic[ConfigType]):
         """
         pass
 
+    @property
+    def dataset_name(self) -> str:
+        """Get the name of the dataset."""
+        return f"{self.__class__.__name__}_{self.config.get_hash()}".lower()
+
     def make_dataset(self, path: str, train_size: int, test_size: int, seed: int = 42) -> DatasetDict:
         """Generate a HuggingFace dataset of prompts and answers with config.
 
@@ -77,10 +88,12 @@ class Prompter(ABC, Generic[ConfigType]):
         Returns:
             The generated dataset.
         """
+        dataset_name = self.dataset_name
+        dataset_path = os.path.join(path, dataset_name)
 
         # first check if the dataset already exists & matches the config
-        if os.path.exists(path):
-            ds = load_from_disk(path)
+        if os.path.exists(dataset_path):
+            ds = load_from_disk(dataset_path)
             assert isinstance(ds, DatasetDict)
             for split in ds.keys():
                 if ds[split].info.description != str(self.config):
@@ -124,5 +137,5 @@ class Prompter(ABC, Generic[ConfigType]):
         )
 
         splits = dataset.train_test_split(test_size=test_size, train_size=train_size, shuffle=True, seed=seed)
-        splits.save_to_disk(path)
+        splits.save_to_disk(dataset_path)
         return splits

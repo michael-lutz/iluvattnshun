@@ -1,6 +1,9 @@
 """Base logger class."""
 
+import os
 import shutil
+import sys
+from datetime import datetime
 from time import time
 from typing import Literal
 
@@ -16,9 +19,10 @@ class Logger:
 
     def __init__(
         self,
+        tensorboard_logdir: str,
         precision: int = 4,
         log_every_n_seconds: float = 30.0,
-        tensorboard_logdir: str | None = None,
+        log_at_start: bool = True,
     ):
         self.precision = precision
         self.log_every_n_seconds = log_every_n_seconds
@@ -35,14 +39,32 @@ class Logger:
             "val": self.start_time,
         }
 
-        self.tb_writer = SummaryWriter(tensorboard_logdir) if tensorboard_logdir is not None else None
+        # creating run directory with next run number
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if not os.path.exists(tensorboard_logdir):
+            os.makedirs(tensorboard_logdir, exist_ok=True)
+        existing_runs = [
+            d
+            for d in os.listdir(tensorboard_logdir)
+            if d.startswith("run_") and os.path.isdir(os.path.join(tensorboard_logdir, d))
+        ]
+        run_numbers = [int(d.split("_")[1]) for d in existing_runs if d.split("_")[1].isdigit()]
+        next_run = max(run_numbers) + 1 if run_numbers else 1
+        self.run_name = f"run_{next_run}_{timestamp}"
+        self.log_dir: str = os.path.join(tensorboard_logdir, self.run_name)
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        self.tb_writer = SummaryWriter(self.log_dir)
+        self.log_at_start = log_at_start
 
     def format_number(self, value: float | int) -> str:
+        """Format number with commas and precision."""
         if isinstance(value, int):
             return f"{value:,}"
         return f"{value:.{self.precision}f}"
 
     def format_time(self, seconds: float) -> str:
+        """Format time in hours, minutes, and seconds."""
         hours = int(seconds // 3600)
         minutes = int((seconds % 3600) // 60)
         seconds = int(seconds % 60)
@@ -53,6 +75,7 @@ class Logger:
         return f"{seconds}s"
 
     def get_terminal_size(self) -> tuple[int, int]:
+        """Returns the terminal size."""
         try:
             size = shutil.get_terminal_size()
             return size.columns, size.lines
@@ -65,6 +88,13 @@ class Logger:
         mode: Literal["train", "val"],
         header: dict[str, float | str],
     ) -> None:
+        """Log metrics and header to TensorBoard.
+
+        Args:
+            metrics: Metrics to log
+            mode: Mode to log to
+            header: Header to log
+        """
         if self.tb_writer is not None:
             for k, v in metrics.items():
                 if isinstance(v, float):
@@ -80,6 +110,13 @@ class Logger:
         mode: Literal["train", "val"],
         header: dict[str, float | str],
     ) -> None:
+        """Log metrics and header to console.
+
+        Args:
+            metrics: Metrics to log
+            mode: Mode to log to
+            header: Header to log
+        """
         term_width, term_height = self.get_terminal_size()
         mode_color = Fore.GREEN if mode == "train" else Fore.YELLOW
         mode_str = f"{mode_color}{mode.upper():<5}{Style.RESET_ALL}"
@@ -104,18 +141,27 @@ class Logger:
         frame.append(f"{Fore.BLUE}{'╶' * term_width}{Style.RESET_ALL}")
         print("\n".join(frame))
 
-    def log(
+    def log_metrics(
         self,
         metrics: dict[str, float | str],
         mode: Literal["train", "val"],
         header: dict[str, float | str] | None = None,
     ) -> None:
+        """Log metrics and header to TensorBoard and console.
+
+        Args:
+            metrics: Metrics to log
+            mode: Mode to log to
+            header: Header to log
+        """
         curr_time = time()
         iter_time = curr_time - self.last_call_time[mode]
         self.step[mode] += 1
         self.last_call_time[mode] = curr_time
 
-        if curr_time - self.last_log_time[mode] < self.log_every_n_seconds:
+        if curr_time - self.last_log_time[mode] < self.log_every_n_seconds and not (
+            self.log_at_start and self.step[mode] == 1
+        ):
             return
 
         self.last_log_time[mode] = curr_time
@@ -134,3 +180,19 @@ class Logger:
         """Clean up resources like TensorBoard writers."""
         if self.tb_writer is not None:
             self.tb_writer.close()
+
+    def log_text(self, name: str, text: str, save_to_file: bool = True) -> None:
+        """Log text to TensorBoard and optionally save to a file.
+
+        Args:
+            name: Name of the text (e.g. "script.py" or "config.txt")
+            text: Text content to log
+            save_to_file: Whether to save the text to a file in the log directory
+        """
+        if self.tb_writer is not None:
+            self.tb_writer.add_text(name, f"```\n{text}\n```")
+
+            if save_to_file and self.log_dir is not None:
+                file_path = os.path.join(self.log_dir, f"{name}")
+                with open(file_path, "w") as f:
+                    f.write(text)
