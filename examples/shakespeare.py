@@ -148,7 +148,7 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 
 if __name__ == "__main__":
     config = ShakespeareConfig(
-        num_layers=4,
+        num_layers=8,
         max_context_length=128,
         num_epochs=-1,  # using IID sampling, not epochal training
         batch_size=64,

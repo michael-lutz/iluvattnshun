@@ -60,7 +60,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         prompt = ""
 
         while True:
-            unfilled_chains = [i for i in range(self.config.num_chains) if len(chains[i]) < self.config.chain_length]
+            unfilled_chains = [i for i in range(self.config.num_chains) if len(chains[i]) <= self.config.chain_length]
             if len(unfilled_chains) == 0:
                 break
 
@@ -70,7 +70,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
             new_var = np.random.choice([c for c in "abcdefghijklmnopqrstuvwxyz" if c not in most_recent_vars])
             chains[sampled_chain].append(new_var)
 
-            prompt += f"{new_var}={old_var};"
+            prompt += f"{old_var}>{new_var};"
 
         final_var_evals = [(str(chain[-1]), str(chain[0])) for chain in chains]
         var_to_eval = np.random.choice(len(final_var_evals))
@@ -95,7 +95,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
                 tokens.append(int(c))
             elif c.isalpha() and c.islower():
                 tokens.append(ord(c) - ord("a") + 10)
-            elif c == "=":
+            elif c == ">":
                 tokens.append(36)
             elif c == "?":
                 tokens.append(37)
@@ -123,13 +123,14 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
     def get_model(self) -> nn.Module:
         """Get the model."""
         max_seq_len = self.config.chain_length * self.config.num_chains * 4 + 2
-        return MultilayerTransformer(
+        model = MultilayerTransformer(
             vocab_size=39,
             d_model=self.config.d_model,
             n_heads=self.config.n_heads,
             n_layers=self.config.num_layers,
             max_seq_len=max_seq_len,
         )
+        return model
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Returns a basic Adam optimizer."""
@@ -185,13 +186,13 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
 if __name__ == "__main__":
     config = VariableRenamingConfig(
-        num_layers=4,
+        num_layers=3,
         d_model=128,
         n_heads=4,
         train_size=100000,
         test_size=1000,
         num_chains=2,
-        chain_length=5,
+        chain_length=17,
         num_epochs=1000,
         batch_size=1024,
         eval_every_n_samples=1000000,
