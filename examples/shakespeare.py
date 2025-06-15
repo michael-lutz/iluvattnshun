@@ -153,6 +153,7 @@ if __name__ == "__main__":
         batch_size=64,
         eval_every_n_samples=40000,
         log_every_n_seconds=3,
+        tensorboard_logdir="logs/shakespeare",
     )
     trainer = ShakespeareTrainer(config)
     trainer.run()
