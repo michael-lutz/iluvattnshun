@@ -24,7 +24,13 @@ class Logger:
         self.log_every_n_seconds = log_every_n_seconds
         self.start_time = time()
         self.step: dict[Literal["train", "val"], int] = {"train": 0, "val": 0}
+
+        # not all logs result in a new message, but want to track iter time
         self.last_log_time: dict[Literal["train", "val"], float] = {
+            "train": self.start_time,
+            "val": self.start_time,
+        }
+        self.last_call_time: dict[Literal["train", "val"], float] = {
             "train": self.start_time,
             "val": self.start_time,
         }
@@ -105,10 +111,13 @@ class Logger:
         header: dict[str, float | str] | None = None,
     ) -> None:
         curr_time = time()
+        iter_time = curr_time - self.last_call_time[mode]
         self.step[mode] += 1
+        self.last_call_time[mode] = curr_time
+
         if curr_time - self.last_log_time[mode] < self.log_every_n_seconds:
             return
-        iter_time = self.format_number(curr_time - self.last_log_time[mode])
+
         self.last_log_time[mode] = curr_time
 
         if header is None:
@@ -116,7 +125,7 @@ class Logger:
 
         header["step"] = self.step[mode]
         header["time"] = self.format_time(curr_time - self.start_time)
-        header["iter_time"] = iter_time
+        header["iter_time"] = self.format_number(iter_time)
 
         self.log_to_tensorboard(metrics, mode, header)
         self.log_to_console(metrics, mode, header)

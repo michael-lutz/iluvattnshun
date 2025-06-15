@@ -1,7 +1,10 @@
 numpy
 colorama
-datasets
 mypy
 tensorboard
+tensorflow
 torch
 
+# Useful for running the examples
+# tensorflow-datasets
+# datasets

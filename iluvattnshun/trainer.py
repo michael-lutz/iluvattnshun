@@ -24,6 +24,8 @@ class TrainerConfig:
     """Batch size."""
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     """Device to use for training."""
+    eval_every_n_samples: int
+    """Evaluate every n samples."""
 
     # Logging
     log_every_n_seconds: float = 30.0
@@ -61,8 +63,12 @@ class Trainer(ABC, Generic[ConfigType]):
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Get loss and predictions for a batch."""
 
-    def validation_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
+    def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """(Optional) Get additional validation metrics for a batch."""
+        return {}
+
+    def post_val_metrics(self, model: nn.Module) -> dict[str, float | str]:
+        """(Optional) Metrics unrelated to data (e.g. sample generations)."""
         return {}
 
     @abstractmethod
@@ -78,7 +84,7 @@ class Trainer(ABC, Generic[ConfigType]):
         # TODO: think about ownership of .train and .zero_grad for safe override
         assert model.training, "Model must be in training mode"
         optimizer.zero_grad()
-        loss, preds = self.get_loss(model, batch)
+        loss, _ = self.get_loss(model, batch)
         loss.backward()
         optimizer.step()
         return {"loss": loss.item()}
@@ -88,7 +94,7 @@ class Trainer(ABC, Generic[ConfigType]):
         assert not model.training, "Model must be in evaluation mode"
         loss, preds = self.get_loss(model, batch)
         metrics: dict[str, float | str] = {"loss": loss.item()}
-        metrics.update(self.validation_metrics(model, batch, preds))
+        metrics.update(self.val_metrics(model, batch, preds))
         return metrics
 
     def run(self) -> None:
@@ -102,27 +108,29 @@ class Trainer(ABC, Generic[ConfigType]):
         training_samples = 0
         while epoch_dec != 0:
             epoch = self.config.num_epochs - epoch_dec
-
-            # Clasic batched training loop
-            model.train()
             for batch in train_loader:
+                # Running eval every n samples
+                model.eval()
+                if training_samples % self.config.eval_every_n_samples == 0:
+                    eval_metrics: dict[str, float | str] = {}
+                    eval_size = 0
+
+                    for batch in val_loader:
+                        batch = move_to_device(batch, self.config.device)
+                        metrics = self.val_step(model, batch)
+                        eval_metrics = {
+                            k: eval_metrics.get(k, 0) + v if isinstance(v, float) else v for k, v in metrics.items()
+                        }
+                        eval_size += 1
+
+                    eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}
+                    eval_metrics.update(self.post_val_metrics(model))
+                    self.logger.log(eval_metrics, mode="val", header={"epoch": epoch, "samples": training_samples})
+
+                model.train()
                 training_samples += self.config.batch_size
                 batch = move_to_device(batch, self.config.device)
                 metrics = self.train_step(model, optimizer, batch)
                 self.logger.log(metrics, mode="train", header={"epoch": epoch, "samples": training_samples})
 
-            # Running eval every epoch and combining metrics over all batches
-            model.eval()
-            eval_metrics: dict[str, float | str] = {}
-            eval_size = 0
-            for batch in val_loader:
-                batch = move_to_device(batch, self.config.device)
-                metrics = self.val_step(model, batch)
-                eval_metrics = {
-                    k: eval_metrics.get(k, 0) + v if isinstance(v, float) else v for k, v in metrics.items()
-                }
-                eval_size += 1
-
-            eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}
-            self.logger.log(eval_metrics, mode="val", header={"epoch": epoch, "samples": training_samples})
             epoch_dec -= 1

@@ -1,3 +1,5 @@
+"""Variable renaming datagen and training w/ pre-LN transformer."""
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +100,10 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
                 raise ValueError(f"Unexpected character: {c}")
         return tokens
 
+    @property
+    def vocab_size(self) -> int:
+        return 39
+
 
 class TransformerLayer(nn.Module):
     """A single transformer layer."""
@@ -171,7 +177,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         answer = batch["answer_tokens"].squeeze()  # (batch_size,)
         return nn.functional.cross_entropy(logits, answer), logits
 
-    def validation_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
+    def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """Get additional validation metrics for a batch."""
         predicted_answers = preds.argmax(dim=-1)
         sample_prompt = batch["prompt"][0]
