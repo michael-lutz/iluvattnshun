@@ -106,27 +106,38 @@ class Trainer(ABC, Generic[ConfigType]):
 
         epoch_dec = self.config.num_epochs
         training_samples = 0
+        eval_steps = 0
         while epoch_dec != 0:
             epoch = self.config.num_epochs - epoch_dec
             for batch in train_loader:
-                # Running eval every n samples
+                # run full evaluation every n samples
                 model.eval()
-                if training_samples % self.config.eval_every_n_samples == 0:
+                if training_samples >= eval_steps * self.config.eval_every_n_samples:
                     eval_metrics: dict[str, float | str] = {}
                     eval_size = 0
 
                     for batch in val_loader:
                         batch = move_to_device(batch, self.config.device)
                         metrics = self.val_step(model, batch)
-                        eval_metrics = {
-                            k: eval_metrics.get(k, 0) + v if isinstance(v, float) else v for k, v in metrics.items()
-                        }
+
+                        # handle float and string metrics separately
+                        for k, v in metrics.items():
+                            if isinstance(v, float):
+                                if k not in eval_metrics:
+                                    eval_metrics[k] = 0.0
+                                prev = eval_metrics[k]
+                                assert isinstance(prev, float)
+                                eval_metrics[k] = prev + v
+                            else:
+                                eval_metrics[k] = v  # only keep the last string
                         eval_size += 1
 
+                    # average the float metrics
                     eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}
                     eval_metrics.update(self.post_val_metrics(model))
                     self.logger.log(eval_metrics, mode="val", header={"epoch": epoch, "samples": training_samples})
-
+                    eval_steps += 1
+                # classic train step
                 model.train()
                 training_samples += self.config.batch_size
                 batch = move_to_device(batch, self.config.device)
