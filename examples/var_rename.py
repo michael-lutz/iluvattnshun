@@ -36,8 +36,8 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Maximum length of a renaming chain."""
     train_size: int
     """Number of training examples."""
-    val_size: int
-    """Number of validation examples."""
+    test_size: int
+    """Number of test examples."""
     dataset_path: str
     """Path to the dataset."""
 
@@ -110,6 +110,19 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
 
 
 class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
+    """Training decoder-only transformer for variable renaming."""
+
+    def init_state(self) -> None:
+        """Adding datasets and tokenizers to the trainer state."""
+        self.prompter = VariableRenamingPrompter(self.config)
+        self.ds_dict = self.prompter.make_dataset(
+            self.config.dataset_path,
+            train_size=self.config.train_size,
+            test_size=self.config.test_size,
+            seed=42,
+        )
+        self.ds_dict.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
+
     def get_model(self) -> nn.Module:
         """Get the model."""
         max_seq_len = self.config.chain_length * self.config.num_chains * 4 + 2
@@ -154,28 +167,22 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
         """Get the train dataloader."""
-        train_path = Path(self.config.dataset_path) / "train"
-        if not os.path.exists(train_path):
-            prompter = VariableRenamingPrompter(self.config)
-            prompter.make_dataset(train_path.as_posix(), size=self.config.train_size, seed=24)
-
-        dataset = Dataset.load_from_disk(train_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
         return torch.utils.data.DataLoader(
-            dataset, batch_size=self.config.batch_size, shuffle=True, prefetch_factor=4, num_workers=4
+            self.ds_dict["train"],
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            prefetch_factor=4,
+            num_workers=4,
         )
 
     def get_val_dataloader(self) -> Iterable[TensorTree]:
         """Get the val dataloader."""
-        val_path = Path(self.config.dataset_path) / "val"
-        if not os.path.exists(val_path):
-            prompter = VariableRenamingPrompter(self.config)
-            prompter.make_dataset(val_path.as_posix(), size=self.config.val_size, seed=42)
-
-        dataset = Dataset.load_from_disk(val_path.as_posix())
-        dataset.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
         return torch.utils.data.DataLoader(
-            dataset, batch_size=self.config.batch_size, shuffle=True, prefetch_factor=4, num_workers=4
+            self.ds_dict["test"],
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            prefetch_factor=4,
+            num_workers=4,
         )
 
 
@@ -185,7 +192,7 @@ if __name__ == "__main__":
         d_model=128,
         n_heads=4,
         train_size=100000,
-        val_size=1000,
+        test_size=1000,
         num_chains=2,
         chain_length=3,
         num_epochs=1000,

@@ -1,10 +1,19 @@
 import hashlib
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 import numpy as np
-from datasets import Dataset, DatasetInfo, Features, Sequence, Value
+from datasets import (
+    Dataset,
+    DatasetDict,
+    DatasetInfo,
+    Features,
+    Sequence,
+    Value,
+    load_dataset,
+)
 
 
 @dataclass(kw_only=True)
@@ -56,20 +65,36 @@ class Prompter(ABC, Generic[ConfigType]):
         """
         pass
 
-    def make_dataset(self, path: str, size: int, seed: int = 42) -> None:
+    def make_dataset(self, path: str, train_size: int, test_size: int, seed: int = 42) -> DatasetDict:
         """Generate a HuggingFace dataset of prompts and answers with config.
 
         Args:
             path: Path to save the dataset to.
+            train_size: Number of training examples to generate.
+            test_size: Number of test examples to generate.
             seed: Seed for the random number generator.
+
+        Returns:
+            The generated dataset.
         """
+
+        # first check if the dataset already exists & matches the config
+        if os.path.exists(path):
+            ds = load_dataset(path)
+            assert isinstance(ds, DatasetDict)
+            for split in ds.keys():
+                if ds[split].info.description != str(self.config):
+                    break
+            else:
+                return ds
+
         prompts = []
         answers = []
         prompt_tokens = []
         answer_tokens = []
-        np.random.seed(seed)  # If ever do multiproc, rethink...
+        np.random.seed(seed)  # if ever do multiproc, rethink...
 
-        for _ in range(size):
+        for _ in range(train_size + test_size):
             prompt, answer = self.get_prompt()
             prompts.append(prompt)
             answers.append(answer)
@@ -97,4 +122,7 @@ class Prompter(ABC, Generic[ConfigType]):
             },
             info=info,
         )
-        dataset.save_to_disk(path)
+
+        splits = dataset.train_test_split(test_size=test_size, train_size=train_size, shuffle=True, seed=seed)
+        splits.save_to_disk(path)
+        return splits

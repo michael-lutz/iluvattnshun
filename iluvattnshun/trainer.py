@@ -50,6 +50,11 @@ class Trainer(ABC, Generic[ConfigType]):
             log_every_n_seconds=config.log_every_n_seconds,
             tensorboard_logdir=config.tensorboard_logdir,
         )
+        self.init_state()
+
+    def init_state(self) -> None:
+        """(Optional) Initialize any state (happens at end of __init__)."""
+        pass
 
     @abstractmethod
     def get_model(self) -> nn.Module:

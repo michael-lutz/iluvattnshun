@@ -48,10 +48,10 @@ def load_shakespeare_text(split: str = "train") -> str:
 
 
 class ShakespeareTrainer(Trainer[ShakespeareConfig]):
+    """Training decoder-only transformer for Shakespeare text."""
 
-    def __init__(self, config: ShakespeareConfig):
-        super().__init__(config)
-
+    def init_state(self) -> None:
+        """Adding datasets and tokenizers to the trainer state."""
         self.train_ds = load_shakespeare_text(split="train")
         self.val_ds = load_shakespeare_text(split="validation")
         unique_tokens = sorted(list(set(self.train_ds + self.val_ds)))
