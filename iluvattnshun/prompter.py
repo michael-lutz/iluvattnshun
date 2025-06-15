@@ -12,7 +12,7 @@ from datasets import (
     Features,
     Sequence,
     Value,
-    load_dataset,
+    load_from_disk,
 )
 
 
@@ -80,7 +80,7 @@ class Prompter(ABC, Generic[ConfigType]):
 
         # first check if the dataset already exists & matches the config
         if os.path.exists(path):
-            ds = load_dataset(path)
+            ds = load_from_disk(path)
             assert isinstance(ds, DatasetDict)
             for split in ds.keys():
                 if ds[split].info.description != str(self.config):
