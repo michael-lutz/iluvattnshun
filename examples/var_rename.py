@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.optim as optim
 from datasets import Dataset
 
+from iluvattnshun.nn import MultilayerTransformer
 from iluvattnshun.prompter import PromptConfig, Prompter
 from iluvattnshun.trainer import Trainer, TrainerConfig
 from iluvattnshun.types import TensorTree
@@ -20,16 +21,23 @@ from iluvattnshun.types import TensorTree
 class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Configuration for variable renaming prompts."""
 
-    train_size: int
-    """Number of training examples."""
-    val_size: int
-    """Number of validation examples."""
+    # model
     num_layers: int
     """Number of transformer layers."""
+    d_model: int
+    """Dimension of the model."""
+    n_heads: int
+    """Number of attention heads."""
+
+    # data generation
     num_chains: int
     """Number of independent renaming chains."""
     chain_length: int
     """Maximum length of a renaming chain."""
+    train_size: int
+    """Number of training examples."""
+    val_size: int
+    """Number of validation examples."""
     dataset_path: str
     """Path to the dataset."""
 
@@ -100,72 +108,18 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
                 raise ValueError(f"Unexpected character: {c}")
         return tokens
 
-    @property
-    def vocab_size(self) -> int:
-        return 39
-
-
-class TransformerLayer(nn.Module):
-    """A single transformer layer."""
-
-    def __init__(self, d_model: int, n_heads: int):
-        super().__init__()
-        self.attention = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.mlp = nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
-        self.norm2 = nn.LayerNorm(d_model)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the transformer layer."""
-        x_norm = self.norm1(x)  # Pre-LN Xiong et al., 2020 (https://arxiv.org/abs/2002.04745v1)
-        attn_out, _ = self.attention(x_norm, x_norm, x_norm)
-        x = x + attn_out
-        mlp_out = self.mlp(self.norm2(x))
-        x = x + mlp_out
-        return x
-
-
-class MultilayerTransformer(nn.Module):
-    """A multilayer transformer model."""
-
-    def __init__(
-        self, vocab_size: int = 39, d_model: int = 128, n_heads: int = 1, n_layers: int = 4, max_seq_len: int = 102
-    ):
-        super().__init__()
-        self.d_model = d_model
-
-        self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
-        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)  # Scale during initialization
-        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
-        self.layers = nn.ModuleList([TransformerLayer(d_model, n_heads) for _ in range(n_layers)])
-        self.output = nn.Linear(d_model, vocab_size)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through the transformer.
-
-        Args:
-            x: Input tensor of shape (batch_size, seq_len)
-
-        Returns:
-            Output logits of shape (batch_size, seq_len, vocab_size)
-        """
-        batch_size, seq_len = x.shape
-
-        pos = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch_size, -1)
-        x = self.token_embedding(x) + self.pos_embedding(pos)
-
-        for layer in self.layers:
-            x = layer(x)
-
-        logits: torch.Tensor = self.output(x)
-        return logits
-
 
 class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
     def get_model(self) -> nn.Module:
         """Get the model."""
         max_seq_len = self.config.chain_length * self.config.num_chains * 4 + 2
-        return MultilayerTransformer(n_layers=self.config.num_layers, max_seq_len=max_seq_len)
+        return MultilayerTransformer(
+            vocab_size=39,
+            d_model=self.config.d_model,
+            n_heads=self.config.n_heads,
+            n_layers=self.config.num_layers,
+            max_seq_len=max_seq_len,
+        )
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Returns a basic Adam optimizer."""
@@ -173,7 +127,8 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the cross-entropy loss over the final token logits."""
-        logits = model(batch["prompt_tokens"])[:, -1, :]  # (batch_size, vocab_size)
+        logits, _, _ = model(batch["prompt_tokens"])
+        logits = logits[:, -1, :]  # (batch_size, vocab_size)
         answer = batch["answer_tokens"].squeeze()  # (batch_size,)
         return nn.functional.cross_entropy(logits, answer), logits
 
@@ -224,17 +179,19 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
 if __name__ == "__main__":
     config = VariableRenamingConfig(
+        num_layers=4,
+        d_model=128,
+        n_heads=4,
         train_size=100000,
         val_size=1000,
-        num_layers=4,
         num_chains=2,
         chain_length=3,
         num_epochs=1000,
         batch_size=1024,
-        log_every_n_seconds=1,
+        eval_every_n_samples=100000,
+        log_every_n_seconds=3,
         dataset_path="data/var_rename",
         tensorboard_logdir="logs/var_rename",
-        device="cuda" if torch.cuda.is_available() else "cpu",
     )
     trainer = VariableRenamingTrainer(config)
     trainer.run()

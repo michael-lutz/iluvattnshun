@@ -37,7 +37,7 @@ class Attention(nn.Module):
         return_attn_weights: bool = False,
         return_new_kv_cache: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
-        """
+        """Forward pass through the attention layer.
         Args:
             query: Query tensor of shape (batch_size, seq_len, embed_dim)
             key: Key tensor of shape (batch_size, seq_len, embed_dim)

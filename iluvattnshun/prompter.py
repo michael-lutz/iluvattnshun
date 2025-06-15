@@ -56,12 +56,6 @@ class Prompter(ABC, Generic[ConfigType]):
         """
         pass
 
-    @property
-    @abstractmethod
-    def vocab_size(self) -> int:
-        """Size of the vocabulary."""
-        pass
-
     def make_dataset(self, path: str, size: int, seed: int = 42) -> None:
         """Generate a HuggingFace dataset of prompts and answers with config.
 
