@@ -46,7 +46,7 @@ class TrainerConfig:
     save_model_path: str | None = None
     """Path to save checkpoints to. If None, saves to tensorboard_logdir/checkpoints."""
     load_model_path: str | None = None
-    """Path to checkpoint to load from. If None, starts from scratch."""
+    """Path to .pt file to load from. If None, starts from scratch."""
 
 
 ConfigType = TypeVar("ConfigType", bound=TrainerConfig)
@@ -79,7 +79,7 @@ class Trainer(ABC, Generic[ConfigType]):
                 self.logger.log_text(script_name, script_text, save_to_file=True)
 
         # setup checkpoint directory
-        self.save_model_path = self.config.save_model_path or self.config.tensorboard_logdir
+        self.save_model_path = self.config.save_model_path or self.logger.log_dir
         self.last_checkpoint_time = time()
         os.makedirs(self.save_model_path, exist_ok=True)
 

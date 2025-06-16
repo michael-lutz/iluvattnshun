@@ -180,11 +180,11 @@ class Logger:
         if self.tb_writer is not None:
             self.tb_writer.close()
 
-    def write_text_to_console(self, text: str) -> None:
+    def write_text_to_console(self, name: str, text: str) -> None:
         """Write text to console."""
         term_width, term_height = self.get_terminal_size()
         horizontal_rule = f"{Fore.BLUE}{'─' * term_width}{Style.RESET_ALL}"
-        header_str = f"{Fore.MAGENTA}LOGGED TEXT{Style.RESET_ALL}"
+        header_str = f"{Fore.MAGENTA}{name}{Style.RESET_ALL}"
         horizontal_rule = f"{Fore.BLUE}{'─' * term_width}{Style.RESET_ALL}"
         text_lines = text.split("\n")
 
@@ -212,4 +212,4 @@ class Logger:
                 f.write(text)
 
         if write_to_console:
-            self.write_text_to_console(text)
+            self.write_text_to_console(name, text)

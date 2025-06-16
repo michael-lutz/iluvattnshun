@@ -187,18 +187,20 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 if __name__ == "__main__":
     config = VariableRenamingConfig(
         num_layers=3,
-        d_model=64 * 3,
-        n_heads=3,
+        d_model=128,
+        n_heads=1,
         train_size=100000,
         test_size=1000,
         num_chains=2,
-        chain_length=32,
+        chain_length=4,
         num_epochs=1000,
         batch_size=512,
         eval_every_n_samples=1000000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",
         tensorboard_logdir="logs/var_rename",
+        save_every_n_seconds=100,
+        overwrite_existing_checkpoints=True,
     )
     trainer = VariableRenamingTrainer(config)
     trainer.run()
