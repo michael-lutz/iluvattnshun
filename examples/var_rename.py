@@ -188,7 +188,7 @@ if __name__ == "__main__":
     config = VariableRenamingConfig(
         num_layers=3,
         d_model=128,
-        n_heads=4,
+        n_heads=1,
         train_size=100000,
         test_size=1000,
         num_chains=2,
