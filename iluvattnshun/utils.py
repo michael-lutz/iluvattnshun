@@ -1,6 +1,10 @@
 """Utility functions."""
 
+import os
+from typing import Any, Literal
+
 import torch
+import torch.nn as nn
 
 from iluvattnshun.types import TensorTree
 
@@ -21,3 +25,74 @@ def move_to_device(batch: TensorTree, device: str) -> TensorTree:
         return [move_to_device(v, device) for v in batch]
     else:
         return batch
+
+
+def save_checkpoint(
+    path: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    step: dict[Literal["train", "val"], int],
+    metrics: dict[str, float | str],
+    scheduler: Any = None,
+    **kwargs: Any,
+) -> None:
+    """Save a checkpoint of the model and training state.
+
+    Args:
+        path: Path to save the checkpoint to
+        model: Model to save
+        optimizer: Optimizer state to save
+        scheduler: Learning rate scheduler state to save
+        epoch: Current epoch number
+        step: Current step number
+        metrics: Dictionary of metrics to save
+        **kwargs: Additional items to save in the checkpoint
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "epoch": epoch,
+        "step": step,
+        "metrics": metrics,
+        **kwargs,
+    }
+
+    if optimizer is not None:
+        checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+
+    torch.save(checkpoint, path)
+
+
+def load_checkpoint(
+    path: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | None = None,
+    scheduler: Any | None = None,
+    map_location: str | None = None,
+) -> tuple[int, dict[Literal["train", "val"], int], dict[str, float | str]]:
+    """Load the model and opt in-place and returns the epoch, step, and metrics.
+
+    Args:
+        path: Path to load the checkpoint from
+        model: Model to load state into
+        optimizer: Optimizer to load state into
+        scheduler: Learning rate scheduler to load state into
+        map_location: Device to map the checkpoint to (e.g. 'cuda:0' or 'cpu')
+
+    Returns:
+        Tuple of (epoch, step, metrics) from the checkpoint
+    """
+    checkpoint = torch.load(path, map_location=map_location)
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    return checkpoint.get("epoch"), checkpoint.get("step"), checkpoint.get("metrics")

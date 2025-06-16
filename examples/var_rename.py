@@ -187,14 +187,14 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 if __name__ == "__main__":
     config = VariableRenamingConfig(
         num_layers=3,
-        d_model=128,
-        n_heads=1,
+        d_model=64 * 3,
+        n_heads=3,
         train_size=100000,
         test_size=1000,
         num_chains=2,
-        chain_length=17,
+        chain_length=32,
         num_epochs=1000,
-        batch_size=1024,
+        batch_size=512,
         eval_every_n_samples=1000000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",

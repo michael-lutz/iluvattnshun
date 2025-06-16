@@ -2,7 +2,6 @@
 
 import os
 import shutil
-import sys
 from datetime import datetime
 from time import time
 from typing import Literal
@@ -82,7 +81,7 @@ class Logger:
         except Exception:
             return 80, 24
 
-    def log_to_tensorboard(
+    def write_metrics_to_tensorboard(
         self,
         metrics: dict[str, float | str],
         mode: Literal["train", "val"],
@@ -104,7 +103,7 @@ class Logger:
                 if isinstance(v, float):
                     self.tb_writer.add_scalar(f"{mode}/{k}", v, self.step[mode])
 
-    def log_to_console(
+    def write_metrics_to_console(
         self,
         metrics: dict[str, float | str],
         mode: Literal["train", "val"],
@@ -173,26 +172,44 @@ class Logger:
         header["time"] = self.format_time(curr_time - self.start_time)
         header["iter_time"] = self.format_number(iter_time)
 
-        self.log_to_tensorboard(metrics, mode, header)
-        self.log_to_console(metrics, mode, header)
+        self.write_metrics_to_tensorboard(metrics, mode, header)
+        self.write_metrics_to_console(metrics, mode, header)
 
     def close(self) -> None:
         """Clean up resources like TensorBoard writers."""
         if self.tb_writer is not None:
             self.tb_writer.close()
 
-    def log_text(self, name: str, text: str, save_to_file: bool = True) -> None:
+    def write_text_to_console(self, text: str) -> None:
+        """Write text to console."""
+        term_width, term_height = self.get_terminal_size()
+        horizontal_rule = f"{Fore.BLUE}{'─' * term_width}{Style.RESET_ALL}"
+        header_str = f"{Fore.MAGENTA}LOGGED TEXT{Style.RESET_ALL}"
+        horizontal_rule = f"{Fore.BLUE}{'─' * term_width}{Style.RESET_ALL}"
+        text_lines = text.split("\n")
+
+        frame = ["\n", horizontal_rule, header_str, horizontal_rule]
+        frame.extend(text_lines)
+        while len(frame) < term_height - 1:
+            frame.append("")
+
+        frame.append(f"{Fore.BLUE}{'╶' * term_width}{Style.RESET_ALL}")
+        print("\n".join(frame))
+
+    def log_text(self, name: str, text: str, save_to_file: bool = True, write_to_console: bool = False) -> None:
         """Log text to TensorBoard and optionally save to a file.
 
         Args:
-            name: Name of the text (e.g. "script.py" or "config.txt")
+            name: Name of the file (e.g. "script.py" or "config.txt")
             text: Text content to log
             save_to_file: Whether to save the text to a file in the log directory
         """
-        if self.tb_writer is not None:
-            self.tb_writer.add_text(name, f"```\n{text}\n```")
+        assert self.tb_writer is not None
+        self.tb_writer.add_text(name, f"```\n{text}\n```")
+        if save_to_file and self.log_dir is not None:
+            file_path = os.path.join(self.log_dir, f"{name}")
+            with open(file_path, "w") as f:
+                f.write(text)
 
-            if save_to_file and self.log_dir is not None:
-                file_path = os.path.join(self.log_dir, f"{name}")
-                with open(file_path, "w") as f:
-                    f.write(text)
+        if write_to_console:
+            self.write_text_to_console(text)

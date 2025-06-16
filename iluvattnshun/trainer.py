@@ -4,7 +4,8 @@ import os
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
-from typing import Generic, Iterable, TypeVar
+from time import time
+from typing import Generic, Iterable, Literal, TypeVar
 
 import torch
 import torch.nn as nn
@@ -12,7 +13,7 @@ import torch.optim as optim
 
 from iluvattnshun.logger import Logger
 from iluvattnshun.types import TensorTree
-from iluvattnshun.utils import move_to_device
+from iluvattnshun.utils import load_checkpoint, move_to_device, save_checkpoint
 
 
 @dataclass(kw_only=True)
@@ -36,6 +37,16 @@ class TrainerConfig:
     """Log float precision."""
     tensorboard_logdir: str
     """Tensorboard log directory."""
+
+    # Checkpointing
+    save_every_n_seconds: int = 1
+    """Save checkpoint every n epochs."""
+    overwrite_existing_checkpoints: bool = False
+    """Deletes existing checkpoints when saving."""
+    save_model_path: str | None = None
+    """Path to save checkpoints to. If None, saves to tensorboard_logdir/checkpoints."""
+    load_model_path: str | None = None
+    """Path to checkpoint to load from. If None, starts from scratch."""
 
 
 ConfigType = TypeVar("ConfigType", bound=TrainerConfig)
@@ -66,6 +77,11 @@ class Trainer(ABC, Generic[ConfigType]):
                 script_name = self.logger.run_name + ".py"
                 script_text = open(main_file, "r").read()
                 self.logger.log_text(script_name, script_text, save_to_file=True)
+
+        # setup checkpoint directory
+        self.save_model_path = self.config.save_model_path or self.config.tensorboard_logdir
+        self.last_checkpoint_time = time()
+        os.makedirs(self.save_model_path, exist_ok=True)
 
         self.init_state()
 
@@ -119,6 +135,31 @@ class Trainer(ABC, Generic[ConfigType]):
         metrics.update(self.val_metrics(model, batch, preds))
         return metrics
 
+    def save_checkpoint(
+        self,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        epoch: int,
+        step: dict[Literal["train", "val"], int],
+        metrics: dict[str, float | str],
+    ) -> None:
+        """Save a checkpoint of the model and training state."""
+        checkpoint_path = os.path.join(self.save_model_path, f"ckpt_epoch_{epoch}.pt")
+        save_checkpoint(
+            checkpoint_path,
+            model=model,
+            optimizer=optimizer,
+            epoch=epoch,
+            step=step,
+            metrics=metrics,
+        )
+        self.logger.log_text(
+            "Checkpointing",
+            f"Saved checkpoint at epoch {epoch}, step {step}",
+            save_to_file=False,
+            write_to_console=True,
+        )
+
     def run(self) -> None:
         """Creates or loads training variables and begins training."""
         model = self.get_model().to(self.config.device)
@@ -126,7 +167,26 @@ class Trainer(ABC, Generic[ConfigType]):
         train_loader = self.get_train_dataloader()
         val_loader = self.get_val_dataloader()
 
-        epoch_dec = self.config.num_epochs
+        # Load checkpoint if specified
+        start_epoch = 0
+        if self.config.load_model_path is not None:
+            epoch, step, metrics = load_checkpoint(
+                self.config.load_model_path,
+                model=model,
+                optimizer=optimizer,
+                map_location=self.config.device,
+            )
+            start_epoch = epoch
+            self.logger.step = step
+            if metrics is not None:
+                self.logger.log_text(
+                    "Checkpointing",
+                    f"Loaded checkpoint at epoch {epoch}, step {step}",
+                    save_to_file=False,
+                    write_to_console=True,
+                )
+
+        epoch_dec = self.config.num_epochs - start_epoch
         training_samples = 0
         eval_steps = 0
         while epoch_dec != 0:
@@ -174,5 +234,13 @@ class Trainer(ABC, Generic[ConfigType]):
                     mode="train",
                     header={"epoch": epoch, "samples": training_samples},
                 )
+
+            # save checkpoint every n seconds
+            if (
+                self.config.save_every_n_seconds > 0
+                and time() - self.last_checkpoint_time >= self.config.save_every_n_seconds
+            ):
+                self.save_checkpoint(model, optimizer, epoch + 1, self.logger.step, metrics)
+                self.last_checkpoint_time = time()
 
             epoch_dec -= 1
