@@ -4,7 +4,7 @@ import hashlib
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Hashable, TypeVar
 
 import numpy as np
 from datasets import (
@@ -19,16 +19,22 @@ from datasets import (
 
 
 @dataclass(kw_only=True)
-class PromptConfig:
+class PromptConfig(ABC):
     """Base configuration class for prompt generation."""
 
-    def __str__(self) -> str:
-        """String representation of the config."""
-        items = sorted(self.__dict__.items())
-        res = "{"
-        for k, v in items:
-            res += f"\t{k}={v}\n"
-        res += "}"
+    @abstractmethod
+    def data_hash_params(self) -> list[str]:
+        """List of parameters to include in the data hash."""
+        pass
+
+    @property
+    def data_config(self) -> dict[str, int | float | str | bool]:
+        """Dictionary of parameters to include in the data hash."""
+        res = {}
+        for k, v in self.__dict__.items():
+            if k in self.data_hash_params():
+                assert isinstance(v, int | float | str | bool), f"Parameter {k} is not a hashable type: {type(v)}"
+                res[k] = v
         return res
 
     def __hash__(self) -> int:
@@ -37,7 +43,11 @@ class PromptConfig:
 
     def get_hash(self) -> int:
         """Generate a hash of the config for dataset versioning."""
-        return int(hashlib.sha256(str(self).encode()).hexdigest(), 16)
+        hashable_repr = ""
+        for k, v in self.data_config.items():
+            hashable_repr += f"{k}={v}\n"
+
+        return int(hashlib.sha256(hashable_repr.encode()).hexdigest(), 16)
 
 
 ConfigType = TypeVar("ConfigType", bound=PromptConfig)
@@ -96,7 +106,7 @@ class Prompter(ABC, Generic[ConfigType]):
             ds = load_from_disk(dataset_path)
             assert isinstance(ds, DatasetDict)
             for split in ds.keys():
-                if ds[split].info.description != str(self.config):
+                if ds[split].info.description != str(self.config.data_config):
                     break
             else:
                 return ds
@@ -115,7 +125,7 @@ class Prompter(ABC, Generic[ConfigType]):
             answer_tokens.append(self.tokenize(answer))
 
         info = DatasetInfo(
-            description=str(self.config),
+            description=str(self.config.data_config),
             features=Features(
                 {
                     "prompt": Value("string"),

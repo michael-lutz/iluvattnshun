@@ -38,6 +38,9 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     dataset_path: str
     """Path to the dataset."""
 
+    def data_hash_params(self) -> list[str]:
+        return ["num_chains", "chain_length", "train_size", "test_size"]
+
 
 class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
     """Prompter for generating variable renaming exercises.

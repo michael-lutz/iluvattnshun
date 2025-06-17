@@ -167,7 +167,7 @@ class Trainer(ABC, Generic[ConfigType]):
         train_loader = self.get_train_dataloader()
         val_loader = self.get_val_dataloader()
 
-        # Load checkpoint if specified
+        # load checkpoint if specified
         start_epoch = 0
         if self.config.load_model_path is not None:
             epoch, step, metrics = load_checkpoint(

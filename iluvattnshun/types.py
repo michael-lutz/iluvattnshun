@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Generic, Hashable, TypeVar, Union
 
-# Jax PyTree-like structure for tensors. Inclusive of tensors themselves.
 TensorTree = Any
+"""Jax PyTree-like structure for tensors. Inclusive of tensors themselves."""
+
+T = TypeVar("T", bound=Hashable)
+"""Type variable for hashable types."""
