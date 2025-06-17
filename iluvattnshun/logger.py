@@ -98,12 +98,16 @@ class Logger:
         """
         if self.tb_writer is not None:
             for k, v in metrics.items():
-                if isinstance(v, float):
+                if isinstance(v, float) or isinstance(v, int):
                     self.tb_writer.add_scalar(f"{mode}/{k}", v, self.step[mode])
+                elif isinstance(v, str):
+                    self.tb_writer.add_text(f"{mode}/{k}", v, self.step[mode])
 
             for k, v in header.items():
-                if isinstance(v, float):
+                if isinstance(v, float) or isinstance(v, int):
                     self.tb_writer.add_scalar(f"{mode}/{k}", v, self.step[mode])
+                elif isinstance(v, str):
+                    self.tb_writer.add_text(f"{mode}/{k}", v, self.step[mode])
 
     def write_metrics_to_console(
         self,
