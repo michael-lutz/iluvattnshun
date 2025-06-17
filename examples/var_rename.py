@@ -21,9 +21,9 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     # model
     num_layers: int
     """Number of transformer layers."""
-    d_model: int
+    dim_model: int
     """Dimension of the model."""
-    n_heads: int
+    num_heads: int
     """Number of attention heads."""
 
     # data generation
@@ -128,8 +128,8 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         max_seq_len = self.config.chain_length * self.config.num_chains * 4 + 2
         model = MultilayerTransformer(
             vocab_size=39,
-            d_model=self.config.d_model,
-            n_heads=self.config.n_heads,
+            d_model=self.config.dim_model,
+            n_heads=self.config.num_heads,
             n_layers=self.config.num_layers,
             max_seq_len=max_seq_len,
         )
@@ -192,14 +192,14 @@ if __name__ == "__main__":
     # python -m examples.var_rename --num_layers=3 --overwrite_existing_checkpoints
     config = VariableRenamingConfig(
         num_layers=3,
-        d_model=128,
-        n_heads=1,
+        dim_model=128,
+        num_heads=1,
         train_size=100000,
         test_size=1000,
         num_chains=2,
         chain_length=4,
         num_epochs=1000,
-        batch_size=512,
+        batch_size=1024,
         eval_every_n_samples=1000000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",
