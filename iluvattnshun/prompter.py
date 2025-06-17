@@ -81,6 +81,15 @@ class Prompter(ABC, Generic[ConfigType]):
         """
         pass
 
+    @abstractmethod
+    def detokenize(self, tokens: list[int]) -> str:
+        """Detokenize a list of token IDs.
+
+        Args:
+            tokens: List of token IDs
+        """
+        pass
+
     @property
     def dataset_name(self) -> str:
         """Get the name of the dataset."""

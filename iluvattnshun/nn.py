@@ -184,8 +184,8 @@ class MultilayerTransformer(nn.Module):
         return_new_kv_cache: bool = False,
     ) -> tuple[
         torch.Tensor,
-        list[tuple[torch.Tensor, torch.Tensor]] | None,
         list[torch.Tensor] | None,
+        list[tuple[torch.Tensor, torch.Tensor]] | None,
     ]:
         """Forward pass through the transformer.
 
@@ -196,7 +196,7 @@ class MultilayerTransformer(nn.Module):
             return_new_kv_cache: Whether to return new KV cache
 
         Returns:
-            Tuple of (output logits, new kv_cache)
+            Tuple of (output logits, attention weights, new kv_cache)
         """
         batch_size, seq_len = x.shape
 
@@ -220,7 +220,7 @@ class MultilayerTransformer(nn.Module):
                 attn_weights.append(layer_attn_weights)
 
         logits: torch.Tensor = self.output(x)
-        return logits, new_kv_cache, attn_weights
+        return logits, attn_weights, new_kv_cache
 
     def generate(self, prompt: torch.Tensor, max_new_tokens: int, temperature: float = 1.0) -> torch.Tensor:
         """Generate new tokens autoregressively.

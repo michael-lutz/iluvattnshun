@@ -82,6 +82,18 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
 
         return prompt, answer
 
+    @property
+    def _tokenization_map(self) -> dict[str, int]:
+        char_to_token: dict[str, int] = {}
+        for i in range(10):
+            char_to_token[str(i)] = i
+        for c in "abcdefghijklmnopqrstuvwxyz":
+            char_to_token[c] = ord(c) - ord("a") + 10
+        char_to_token[">"] = 36
+        char_to_token["?"] = 37
+        char_to_token[";"] = 38
+        return char_to_token
+
     def tokenize(self, text: str) -> list[int]:
         """Tokenize the input text.
 
@@ -94,19 +106,19 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         """
         tokens = []
         for c in text:
-            if c.isdigit():
-                tokens.append(int(c))
-            elif c.isalpha() and c.islower():
-                tokens.append(ord(c) - ord("a") + 10)
-            elif c == ">":
-                tokens.append(36)
-            elif c == "?":
-                tokens.append(37)
-            elif c == ";":
-                tokens.append(38)
-            else:
-                raise ValueError(f"Unexpected character: {c}")
+            tokens.append(self._tokenization_map[c])
         return tokens
+
+    def detokenize(self, tokens: list[int]) -> str:
+        """Detokenize the input tokens.
+
+        Maps:
+        - Tokens 0-9 -> Numbers 0-9
+        - Tokens 10-35 -> Letters a-z
+        - Tokens 36-38 -> '=', '?', ';'
+        """
+        inverse_tokenization_map: dict[int, str] = {v: k for k, v in self._tokenization_map.items()}
+        return "".join([inverse_tokenization_map[token] for token in tokens])
 
 
 class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
