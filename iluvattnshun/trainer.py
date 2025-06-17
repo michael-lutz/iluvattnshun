@@ -76,7 +76,7 @@ class Trainer(ABC, Generic[ConfigType]):
         # log the config
         config_dict = asdict(config)
         config_text = "\n".join(f"{k}: {v}" for k, v in config_dict.items())
-        self.logger.log_text("config.yaml", config_text)
+        self.logger.log_text(self.logger.run_name + ".yaml", config_text)
 
         # log the script
         main_module = sys.modules["__main__"]
