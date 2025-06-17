@@ -10,10 +10,12 @@ from typing import Generic, Iterable, Literal, TypeVar
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import yaml
 
 from iluvattnshun.logger import Logger
 from iluvattnshun.types import TensorTree
 from iluvattnshun.utils import (
+    get_yaml_string,
     load_checkpoint,
     move_to_device,
     save_checkpoint,
@@ -74,8 +76,7 @@ class Trainer(ABC, Generic[ConfigType]):
         )
 
         # log the config
-        config_dict = asdict(config)
-        config_text = "\n".join(f"{k}: {v}" for k, v in config_dict.items())
+        config_text = get_yaml_string(config)
         self.logger.log_text(self.logger.run_name + ".yaml", config_text)
 
         # log the script

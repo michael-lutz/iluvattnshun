@@ -3,11 +3,12 @@
 import argparse
 import os
 import sys
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from typing import Any, Literal, TypeVar
 
 import torch
 import torch.nn as nn
+import yaml
 
 from iluvattnshun.types import TensorTree
 
@@ -101,7 +102,7 @@ def load_checkpoint(
     return checkpoint.get("epoch"), checkpoint.get("step"), checkpoint.get("metrics")
 
 
-def update_dataclass_from_cli(config: Any) -> Any:
+def update_config_from_cli(config: Any) -> Any:
     """Update a dataclass instance with matching CLI args (e.g., --param value)."""
     args = sys.argv[1:]
     for arg in args:
@@ -117,3 +118,17 @@ def update_dataclass_from_cli(config: Any) -> Any:
             raise ValueError(f"Invalid argument: {arg}. Expected --param_name=value or --bool_param_name")
 
     return config
+
+
+def get_yaml_string(config: Any) -> str:
+    """Get a YAML string from a dataclass instance."""
+    config_dict = asdict(config)
+    return_str: str = yaml.dump(config_dict)
+    return return_str
+
+
+def load_config_from_yaml(yaml_path: str, cls: type[Any]) -> Any:
+    """Load a config from a YAML file."""
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+    return cls(**config)
