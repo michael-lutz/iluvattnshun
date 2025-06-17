@@ -188,6 +188,8 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
 
 if __name__ == "__main__":
+    # Example usage (config gets overridden by CLI args):
+    # python -m examples.var_rename --num_layers=3 --overwrite_existing_checkpoints
     config = VariableRenamingConfig(
         num_layers=3,
         d_model=128,

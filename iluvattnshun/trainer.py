@@ -13,7 +13,12 @@ import torch.optim as optim
 
 from iluvattnshun.logger import Logger
 from iluvattnshun.types import TensorTree
-from iluvattnshun.utils import load_checkpoint, move_to_device, save_checkpoint
+from iluvattnshun.utils import (
+    load_checkpoint,
+    move_to_device,
+    save_checkpoint,
+    update_dataclass_from_cli,
+)
 
 
 @dataclass(kw_only=True)
@@ -57,6 +62,7 @@ class Trainer(ABC, Generic[ConfigType]):
 
     def __init__(self, config: ConfigType):
         """Initialize the trainer."""
+        config = update_dataclass_from_cli(config)
         self.config = config
         self.logger = Logger(
             tensorboard_logdir=config.tensorboard_logdir,

@@ -1,7 +1,10 @@
 """Utility functions."""
 
+import argparse
 import os
-from typing import Any, Literal
+import sys
+from dataclasses import dataclass, fields, is_dataclass, replace
+from typing import Any, Literal, TypeVar
 
 import torch
 import torch.nn as nn
@@ -96,3 +99,21 @@ def load_checkpoint(
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
     return checkpoint.get("epoch"), checkpoint.get("step"), checkpoint.get("metrics")
+
+
+def update_dataclass_from_cli(config: Any) -> Any:
+    """Update a dataclass instance with matching CLI args (e.g., --param value)."""
+    args = sys.argv[1:]
+    for arg in args:
+        if "=" in arg:
+            key, value = arg.split("=")
+            key = key.lstrip("--")
+            value = type(getattr(config, key))(value)
+            config = replace(config, **{key: value})
+        elif "--" in arg:
+            key = arg.lstrip("--")
+            config = replace(config, **{key: True})
+        else:
+            raise ValueError(f"Invalid argument: {arg}. Expected --param_name=value or --bool_param_name")
+
+    return config
