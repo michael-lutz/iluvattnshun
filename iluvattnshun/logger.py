@@ -22,6 +22,7 @@ class Logger:
         precision: int = 4,
         log_every_n_seconds: float = 30.0,
         log_at_start: bool = True,
+        name: str | None = None,
     ):
         self.precision = precision
         self.log_every_n_seconds = log_every_n_seconds
@@ -48,8 +49,9 @@ class Logger:
             if d.startswith("run_") and os.path.isdir(os.path.join(tensorboard_logdir, d))
         ]
         run_numbers = [int(d.split("_")[1]) for d in existing_runs if d.split("_")[1].isdigit()]
-        next_run = max(run_numbers) + 1 if run_numbers else 1
-        self.run_name = f"run_{next_run}_{timestamp}"
+        next_run_number = max(run_numbers) + 1 if run_numbers else 1
+        name = timestamp if name is None else name
+        self.run_name = f"run_{next_run_number}_{name}"
         self.log_dir: str = os.path.join(tensorboard_logdir, self.run_name)
         os.makedirs(self.log_dir, exist_ok=True)
 
@@ -171,6 +173,7 @@ class Logger:
         header["step"] = self.step[mode]
         header["time"] = self.format_time(curr_time - self.start_time)
         header["iter_time"] = self.format_number(iter_time)
+        header["run_name"] = self.run_name
 
         self.write_metrics_to_tensorboard(metrics, mode, header)
         self.write_metrics_to_console(metrics, mode, header)

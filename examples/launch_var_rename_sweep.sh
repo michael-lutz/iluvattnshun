@@ -54,7 +54,7 @@ done
 for ((i = 0; i < n; i++)); do
     gpu_index=$((i % ${#GPUs[@]}))
     gpu=${GPUs[$gpu_index]}
-    cmd="CUDA_VISIBLE_DEVICES=$gpu python -m examples.var_rename ${sweeps[$i]}"
+    cmd="CUDA_VISIBLE_DEVICES=$gpu python -m examples.var_rename ${sweeps[$i]} --run_name=sweep_${i}"
     tmux send-keys -t $SESSION_NAME:0.$i "$cmd" C-m
 done
 

@@ -42,6 +42,8 @@ class TrainerConfig:
     """Log float precision."""
     tensorboard_logdir: str
     """Tensorboard log directory."""
+    run_name: str = ""
+    """Name of the run. If empty, uses timestamp."""
 
     # Checkpointing
     save_every_n_seconds: int = 1
@@ -68,6 +70,7 @@ class Trainer(ABC, Generic[ConfigType]):
             tensorboard_logdir=config.tensorboard_logdir,
             precision=config.log_fp,
             log_every_n_seconds=config.log_every_n_seconds,
+            name=config.run_name or None,
         )
 
         # log the config
