@@ -17,7 +17,7 @@ from iluvattnshun.utils import (
     load_checkpoint,
     move_to_device,
     save_checkpoint,
-    update_dataclass_from_cli,
+    update_config_from_cli,
 )
 
 
@@ -64,7 +64,7 @@ class Trainer(ABC, Generic[ConfigType]):
 
     def __init__(self, config: ConfigType):
         """Initialize the trainer."""
-        config = update_dataclass_from_cli(config)
+        config = update_config_from_cli(config)
         self.config = config
         self.logger = Logger(
             tensorboard_logdir=config.tensorboard_logdir,
@@ -153,6 +153,11 @@ class Trainer(ABC, Generic[ConfigType]):
         metrics: dict[str, float | str],
     ) -> None:
         """Save a checkpoint of the model and training state."""
+        if self.config.overwrite_existing_checkpoints:
+            for file in os.listdir(self.save_model_path):
+                if file.endswith(".pt"):
+                    os.remove(os.path.join(self.save_model_path, file))
+
         checkpoint_path = os.path.join(self.save_model_path, f"ckpt_epoch_{epoch}.pt")
         save_checkpoint(
             checkpoint_path,
