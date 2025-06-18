@@ -22,9 +22,9 @@ class ShakespeareConfig(TrainerConfig):
     """Number of transformer layers."""
     max_context_length: int
     """Maximum context length for the transformer."""
-    d_model: int = 128
+    d_model: int
     """Dimension of the model."""
-    n_heads: int = 4
+    n_heads: int
     """Number of attention heads."""
 
 
@@ -149,6 +149,8 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 if __name__ == "__main__":
     config = ShakespeareConfig(
         num_layers=8,
+        d_model=128,
+        n_heads=4,
         max_context_length=128,
         num_epochs=-1,  # using IID sampling, not epochal training
         batch_size=64,

@@ -28,12 +28,11 @@ class Attention(nn.Module):
 
     def forward(
         self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
+        x: torch.Tensor,
+        key: torch.Tensor | None = None,
+        value: torch.Tensor | None = None,
         key_padding_mask: Optional[torch.Tensor] = None,
         is_causal: bool = False,
-        kv_cache: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         return_attn_weights: bool = False,
         return_new_kv_cache: bool = False,
     ) -> Tuple[
@@ -43,12 +42,11 @@ class Attention(nn.Module):
     ]:
         """Forward pass through the attention layer.
         Args:
-            query: Query tensor of shape (batch_size, seq_len, embed_dim)
-            key: Key tensor of shape (batch_size, seq_len, embed_dim)
-            value: Value tensor of shape (batch_size, seq_len, embed_dim)
-            key_padding_mask: Optional mask tensor of shape (batch_size, seq_len)
+            x: Query tensor of shape (batch, seq, embed)
+            key: Key tensor of shape (batch, num_heads, seq, d_model/num_heads)
+            value: Value tensor of shape (batch, num_heads, seq, d_model/num_heads)
+            key_padding_mask: Optional mask tensor of shape (batch, seq)
             is_causal: Whether to use causal masking
-            kv_cache: Optional tuple of (cached_keys, cached_values)
             return_attn_weights: Whether to return attention weights
             return_new_kv_cache: Whether to return new KV cache
 
@@ -59,27 +57,27 @@ class Attention(nn.Module):
         """
         # project queries, keys, and values
         # TODO: eventually allow for different projections for q, k, v
-        q = self.q_proj(query)  # (batch_size, seq_len, embed_dim)
-        k = self.k_proj(key)  # (batch_size, seq_len, embed_dim)
-        v = self.v_proj(value)  # (batch_size, seq_len, embed_dim)
+        q = self.q_proj(x)  # (batch, seq, embed)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
 
         # reshape for multi-head attention
-        batch_size = query.size(0)
-        q = q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
+        batch_size = x.size(0)
+        q = q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)  # (batch, heads, seq, head_dim)
         k = k.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
 
         # handle kv cache if provided
-        if kv_cache is not None:
-            cached_k, cached_v = kv_cache
-            k = torch.cat([cached_k, k], dim=2)  # concatenate along sequence dimension
-            v = torch.cat([cached_v, v], dim=2)
+        if key is not None and value is not None:
+            k = torch.cat([key, k], dim=2)  # (batch, heads, seq + cached, head_dim)
+            v = torch.cat([value, v], dim=2)
 
         # compute attention scores
+        assert x.device == k.device == v.device, "x, k, v must be on the same device"
         attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
 
-        # apply causal mask if needed
-        if is_causal:
+        # apply causal mask if no KV cache
+        if is_causal and key is None and value is None:
             mask = torch.triu(torch.ones(attn.size(-2), attn.size(-1), device=attn.device), diagonal=1)
             attn = attn.masked_fill(mask.bool(), float("-inf"))
 
@@ -133,16 +131,14 @@ class TransformerLayer(nn.Module):
             k, v = kv_cache
             attn_out, attn_weights, new_kv_cache = self.attention(
                 x_norm,
-                k,
-                v,
+                key=k,
+                value=v,
                 is_causal=True,
                 return_attn_weights=return_attn_weights,
                 return_new_kv_cache=return_new_kv_cache,
             )
         else:
             attn_out, attn_weights, new_kv_cache = self.attention(
-                x_norm,
-                x_norm,
                 x_norm,
                 is_causal=True,
                 return_attn_weights=return_attn_weights,
@@ -192,15 +188,20 @@ class MultilayerTransformer(nn.Module):
         Args:
             x: Input tensor of shape (batch_size, seq_len)
             kv_cache: Optional list of (key, value) tuples for each layer
+                      shape (batch_size, num_heads, seq_len, d_model/num_heads)
             return_attn_weights: Whether to return attention weights
             return_new_kv_cache: Whether to return new KV cache
 
         Returns:
             Tuple of (output logits, attention weights, new kv_cache)
         """
-        batch_size, seq_len = x.shape
+        batch_size, _ = x.shape
 
-        pos = torch.arange(seq_len, device=x.device).unsqueeze(0).expand(batch_size, -1)
+        # get learned positional embeddings
+        # TODO: add RoPE / nonparametric positional embeddings
+        past_len = kv_cache[0][0].shape[2] if kv_cache is not None else 0
+        pos = torch.arange(past_len, past_len + x.size(1), device=x.device).unsqueeze(0).expand(batch_size, -1)
+
         x = self.token_embedding(x) + self.pos_embedding(pos)
 
         new_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = [] if return_new_kv_cache else None
@@ -222,6 +223,12 @@ class MultilayerTransformer(nn.Module):
         logits: torch.Tensor = self.output(x)
         return logits, attn_weights, new_kv_cache
 
+    def sample_token(self, logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+        next_token_logits = logits / temperature
+        probs = torch.softmax(next_token_logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+        return next_token
+
     def generate(self, prompt: torch.Tensor, max_new_tokens: int, temperature: float = 1.0) -> torch.Tensor:
         """Generate new tokens autoregressively.
 
@@ -233,19 +240,16 @@ class MultilayerTransformer(nn.Module):
         Returns:
             Generated sequence including prompt
         """
-        generated = prompt.clone()
-        kv_cache = None
+
+        # run once on the whole prompt to prime the cache
+        _, _, kv_cache = self(prompt, return_attn_weights=False, return_new_kv_cache=True)
+        generated = prompt  # start with the full prompt
 
         for _ in range(max_new_tokens):
-            # get logits using most recent tokens
-            logits, attn_weights, kv_cache = self(
-                generated, kv_cache, return_attn_weights=False, return_new_kv_cache=True
-            )
-            next_token_logits = logits[:, -1, :] / temperature
-
-            # sample and add to generated sequence
-            probs = torch.softmax(next_token_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
+            # keep feeding only the last token and append to the full sequence
+            last_token = generated[:, -1:].clone()
+            logits, _, kv_cache = self(last_token, kv_cache, return_attn_weights=False, return_new_kv_cache=True)
+            next_token = self.sample_token(logits[:, -1, :], temperature)
             generated = torch.cat([generated, next_token], dim=1)
 
         return generated
