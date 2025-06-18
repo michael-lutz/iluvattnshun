@@ -52,15 +52,23 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
     def get_prompt(self) -> tuple[str, str]:
         """Samples a variable renaming prompt and answers.
 
-        Key idea is that when redefining, only sample from variables which are
-        not currently the most recent variable in any chain.
+        Example prompt: "|1>a|2>b|a>c|b>d"
+        Answers:        ".1.1.2.2.1.1.2.2" where "." means <MASK>
 
-        A key limitation is that we don't allow for more than 25 chains.
+        When redefining, only sample from variables which are not currently at
+        the end of any chain (no DAG structure).
+
+        Since evaluations are single digit, we can only have at most 10 chains.
         """
-        assert self.config.num_chains <= 25, "We don't support more than 25 chains."
+        assert self.config.num_chains <= 10, "We don't support more than 10 chains."
 
-        chains: list[list[int | str]] = [[np.random.randint(0, 10)] for _ in range(self.config.num_chains)]
+        # TODO: ensure no resampling of same number
+        evaluations = list(range(self.config.num_chains))
+        np.random.shuffle(evaluations)
+
+        chains: list[list[int | str]] = [[evaluations[i]] for i in range(self.config.num_chains)]
         prompt = ""
+        answers = ""
 
         while True:
             unfilled_chains = [i for i in range(self.config.num_chains) if len(chains[i]) <= self.config.chain_length]
@@ -72,15 +80,12 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
             old_var = chains[sampled_chain][-1]
             new_var = np.random.choice([c for c in "abcdefghijklmnopqrstuvwxyz" if c not in most_recent_vars])
             chains[sampled_chain].append(new_var)
+            evaluation = chains[sampled_chain][0]
 
-            prompt += f"{old_var}>{new_var};"
+            prompt += f"|{old_var}>{new_var}"
+            answers += f".{evaluation}.{evaluation}"
 
-        final_var_evals = [(str(chain[-1]), str(chain[0])) for chain in chains]
-        var_to_eval = np.random.choice(len(final_var_evals))
-        prompt += final_var_evals[var_to_eval][0] + "?"
-        answer = final_var_evals[var_to_eval][1]
-
-        return prompt, answer
+        return prompt, answers
 
     @property
     def _tokenization_map(self) -> dict[str, int]:
@@ -90,8 +95,8 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         for c in "abcdefghijklmnopqrstuvwxyz":
             char_to_token[c] = ord(c) - ord("a") + 10
         char_to_token[">"] = 36
-        char_to_token["?"] = 37
-        char_to_token[";"] = 38
+        char_to_token["|"] = 37
+        char_to_token["."] = -1
         return char_to_token
 
     def tokenize(self, text: str) -> list[int]:
@@ -100,9 +105,9 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         Maps:
         - Numbers 0-9 -> tokens 0-9
         - Letters a-z -> tokens 10-35
-        - '=' -> token 36
-        - '?' -> token 37
-        - ';' -> token 38
+        - '>' -> token 36
+        - '|' -> token 37
+        - '.' -> token -1 (mask)
         """
         tokens = []
         for c in text:
@@ -115,7 +120,8 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         Maps:
         - Tokens 0-9 -> Numbers 0-9
         - Tokens 10-35 -> Letters a-z
-        - Tokens 36-38 -> '=', '?', ';'
+        - Tokens 36-37 -> '>', '|'
+        - Token -1 -> '.' (mask)
         """
         inverse_tokenization_map: dict[int, str] = {v: k for k, v in self._tokenization_map.items()}
         return "".join([inverse_tokenization_map[token] for token in tokens])
@@ -152,11 +158,31 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         return optim.Adam(model.parameters(), lr=1e-3)
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
-        """Returns the cross-entropy loss over the final token logits."""
-        logits, _, _ = model(batch["prompt_tokens"])
-        logits = logits[:, -1, :]  # (batch_size, vocab_size)
-        answer = batch["answer_tokens"].squeeze()  # (batch_size,)
-        return nn.functional.cross_entropy(logits, answer), logits
+        """Returns the cross-entropy loss over the final token logits.
+
+        Example prompt and answer (where . is masked out):
+            Prompt:  "|1>a|2>b|a>c|b>d"
+            Mask:    "0001000100010001"
+            Answers: " 1 1 2 2 1 1 2 2"
+        """
+        x = batch["input"]  # (batch, seq)
+        y = batch["answer"]  # (batch, seq)
+        mask = (x != -1).long()  # (batch, seq)
+
+        logits = model(x)  # (batch, seq, vocab_size)
+        vocab_size = logits.shape[-1]
+
+        # flatten for masked loss computation
+        logits_flat = logits.view(-1, vocab_size)  # (batch*seq, vocab_size)
+        y_flat = y.view(-1)  # (batch*seq)
+        mask_flat = mask.view(-1).bool()  # (batch*seq)
+
+        # get cross-entropy loss over masked positions
+        logits_masked = logits_flat[mask_flat]  # (n, vocab_size)
+        y_masked = y_flat[mask_flat]  # (n)
+        loss = torch.nn.functional.cross_entropy(logits_masked, y_masked)
+
+        return loss, logits
 
     def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """Get additional validation metrics for a batch."""
@@ -206,13 +232,14 @@ if __name__ == "__main__":
         num_layers=3,
         dim_model=128,
         num_heads=1,
-        train_size=100000,
-        test_size=1000,
-        num_chains=2,
-        chain_length=4,
+        # train_size=10_000_000,
+        train_size=10_000,
+        test_size=10_000,
+        num_chains=10,
+        chain_length=20,
         num_epochs=1000,
         batch_size=1024,
-        eval_every_n_samples=1000000,
+        eval_every_n_samples=10_000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",
         tensorboard_logdir="logs/var_rename",
