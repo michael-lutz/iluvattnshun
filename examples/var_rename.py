@@ -1,7 +1,8 @@
 """Variable renaming datagen and training w/ pre-LN transformer."""
 
+import string
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 import torch
@@ -32,8 +33,8 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     # data generation
     num_chains: int
     """Number of independent renaming chains."""
-    chain_length: int
-    """Maximum length of a renaming chain."""
+    num_renames: int
+    """Number of renames per example."""
     train_size: int
     """Number of training examples."""
     test_size: int
@@ -52,43 +53,61 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
     is to evaluate the final variable in terms of the initial value.
     """
 
-    def get_prompt(self) -> tuple[str, str]:
+    def get_prompt(self, rng: np.random.Generator) -> tuple[str, str, dict[str, Any]]:
         """Samples a variable renaming prompt and answers.
 
-        Example prompt: "|1>a|2>b|a>c|b>d"
-        Answers:        ".1.1.2.2.1.1.2.2" where "." means <MASK>
+        Example prompt: "1>a;2>b;a>c;b>d;d>e;"
+        Answers:        "1.1.2.2.1.1.2.2.2.2;" where "." means <MASK>
+        Depths:         "0000000011111111222;"
 
         When redefining, only sample from variables which are not currently at
         the end of any chain (no DAG structure).
 
         Since evaluations are single digit, we can only have at most 10 chains.
+
+        We also store the depth at each prediction step for eval purposes.
         """
-        assert self.config.num_chains <= 10, "We don't support more than 10 chains."
+        num_chains = self.config.num_chains
+        assert num_chains <= 10, "We don't support more than 10 chains."
 
-        # TODO: ensure no resampling of same number
-        evaluations = list(range(self.config.num_chains))
-        np.random.shuffle(evaluations)
+        # initialize evaluations and state trackers
+        evals = np.arange(num_chains)
+        rng.shuffle(evals)
+        eval_strs = [str(int(e)) for e in evals]
+        eval_depths = [0] * num_chains
+        current_vars = eval_strs.copy()
 
-        chains: list[list[int | str]] = [[evaluations[i]] for i in range(self.config.num_chains)]
-        prompt = ""
-        answers = ""
+        # track the active variable of each chain for membership checks
+        active_vars = set(current_vars)
 
-        while True:
-            unfilled_chains = [i for i in range(self.config.num_chains) if len(chains[i]) <= self.config.chain_length]
-            if len(unfilled_chains) == 0:
-                break
+        # prepare for prompt and answer parts
+        prompt_parts: list[str] = []
+        answer_parts: list[str] = []
+        depth_parts: list[int] = []
 
-            sampled_chain = np.random.choice(unfilled_chains)
-            most_recent_vars = [chain[-1] for chain in chains]
-            old_var = chains[sampled_chain][-1]
-            new_var = np.random.choice([c for c in "abcdefghijklmnopqrstuvwxyz" if c not in most_recent_vars])
-            chains[sampled_chain].append(new_var)
-            evaluation = chains[sampled_chain][0]
+        # precompute available letters
+        letters = list(string.ascii_lowercase)
 
-            prompt += f"|{old_var}>{new_var}"
-            answers += f".{evaluation}.{evaluation}"
+        for _ in range(self.config.num_renames):
+            chain_idx = rng.integers(0, num_chains)
 
-        return prompt, answers
+            # choose a new variable not currently active in any chain
+            choices = [c for c in letters if c not in active_vars]
+            new_var = str(rng.choice(choices))
+            old_var = current_vars[chain_idx]
+
+            # keeping same lengths for simplicity downstream
+            prompt_parts.append(f"{old_var}>{new_var};")
+            answer_parts.append(f"{eval_strs[chain_idx]}.{eval_strs[chain_idx]}.")
+            depth_parts.extend([eval_depths[chain_idx]] * 4)
+
+            # update active variables and state trackers
+            active_vars.remove(old_var)
+            active_vars.add(new_var)
+            current_vars[chain_idx] = new_var
+            eval_depths[chain_idx] += 1
+
+        return "".join(prompt_parts), "".join(answer_parts), {"depths": depth_parts}
 
     @property
     def _tokenization_map(self) -> dict[str, int]:
@@ -98,7 +117,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         for c in "abcdefghijklmnopqrstuvwxyz":
             char_to_token[c] = ord(c) - ord("a") + 10
         char_to_token[">"] = 36
-        char_to_token["|"] = 37
+        char_to_token[";"] = 37
         char_to_token["."] = 38
         return char_to_token
 
@@ -109,7 +128,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         - Numbers 0-9 -> tokens 0-9
         - Letters a-z -> tokens 10-35
         - '>' -> token 36
-        - '|' -> token 37
+        - ';' -> token 37
         - '.' -> token 38 (mask)
         """
         tokens = []
@@ -123,7 +142,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         Maps:
         - Tokens 0-9 -> Numbers 0-9
         - Tokens 10-35 -> Letters a-z
-        - Tokens 36-37 -> '>', '|'
+        - Tokens 36-37 -> '>', ';'
         - Token 38 -> '.' (mask)
         """
         inverse_tokenization_map: dict[int, str] = {v: k for k, v in self._tokenization_map.items()}
@@ -142,7 +161,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
             test_size=self.config.test_size,
             seed=42,
         )
-        self.ds_dict.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
+        self.ds_dict.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer", "depths"])
 
         # log train test stats
         train_prompts = set(self.ds_dict["train"]["prompt"])
@@ -159,7 +178,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
     def get_model(self) -> nn.Module:
         """Get the model."""
-        max_seq_len = self.config.chain_length * self.config.num_chains * 4 + 2
+        max_seq_len = self.config.num_renames * 4
         model = MultilayerTransformer(
             vocab_size=39,
             d_model=self.config.dim_model,
@@ -177,7 +196,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         """Returns the cross-entropy loss over the final token logits.
 
         Example prompt and answer (where . is masked out):
-            Prompt:  "|1>a|2>b|a>c|b>d"
+            Prompt:  ";1>a;2>b;a>c;b>d"
             Mask:    "0101010101010101"
             Answers: " 1 1 2 2 1 1 2 2"
         """
@@ -206,34 +225,42 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         target = batch["answer_tokens"].to(predicted_answers.device)  # (batch, seq)
         mask = target != MASK_ID  # (batch, seq)
 
-        # accuracy only over masked positions
         correct = ((predicted_answers == target) & mask).float()
         total_accuracy = correct.sum() / mask.sum()
 
-        # sample info for logging
+        # Compute per-depth accuracy
+        depth_tensor = batch["depths"].to(predicted_answers.device)  # (batch, seq)
+        depth_metrics = {}
+        for depth_val in torch.unique(depth_tensor[mask]):
+            depth_mask = (depth_tensor == depth_val) & mask
+            correct_at_depth = ((predicted_answers == target) & depth_mask).float()
+            acc = correct_at_depth.sum() / depth_mask.sum()
+            depth_metrics[f"acc_per_depth/{int(depth_val)}"] = acc.item()
+
+        # Sample decoding info
         sample_idx = 0
         sample_prompt = batch["prompt"][sample_idx]
         sample_answer = batch["answer"][sample_idx]
         sample_pred_token_ids = predicted_answers[sample_idx].tolist()
         predicted_answer = self.prompter.detokenize(sample_pred_token_ids)
-        predicted_answer = "".join(c if i % 2 else "." for i, c in enumerate(predicted_answer))
-        correct = "".join(
+        predicted_answer = "".join("." if i % 2 else c for i, c in enumerate(predicted_answer))
+        correct_str = "".join(
             "." if sample_answer[i] == MASK_TOKEN else "✓" if sample_answer[i] == predicted_answer[i] else "✗"
             for i in range(len(sample_answer))
         )
-        sample_logits = preds[sample_idx]
 
-        # find the probability of each predicted token
-        sample_probs = torch.softmax(sample_logits, dim=-1)  # (seq, vocab)
-        sample_pred_probs = sample_probs[torch.arange(sample_probs.size(0)), sample_pred_token_ids]  # (seq,)
+        sample_logits = preds[sample_idx]
+        sample_probs = torch.softmax(sample_logits, dim=-1)
+        sample_pred_probs = sample_probs[torch.arange(sample_probs.size(0)), sample_pred_token_ids]
 
         return {
             "sample_prompt": sample_prompt,
             "sample_answer": sample_answer,
             "predicted_answer": predicted_answer,
-            "correct": correct,
-            "probability": sample_pred_probs.mean().item(),  # avg probability of predicted tokens
+            "correct": correct_str,
+            "probability": sample_pred_probs.mean().item(),
             "accuracy": total_accuracy.item(),
+            **depth_metrics,
         }
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
@@ -263,12 +290,12 @@ if __name__ == "__main__":
     config = VariableRenamingConfig(
         num_layers=3,
         dim_model=128,
-        num_heads=1,
+        num_heads=4,
         # train_size=10_000_000,
         train_size=10_000,
         test_size=10_000,
         num_chains=2,
-        chain_length=16,
+        num_renames=40,
         num_epochs=1000,
         batch_size=1024,
         eval_every_n_samples=10_000,

@@ -5,7 +5,7 @@ import os
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from typing import Generic, Hashable, TypeVar
+from typing import Any, Generic, Hashable, TypeVar
 
 import numpy as np
 from datasets import (
@@ -17,7 +17,24 @@ from datasets import (
     Value,
     load_from_disk,
 )
+from matplotlib.pylab import default_rng
 from tqdm import tqdm
+
+
+def get_field_type(v: Any) -> Any:
+    """Get the type name of a value."""
+    if isinstance(v, bool):
+        return Value("bool")
+    elif isinstance(v, int):
+        return Value("int32")
+    elif isinstance(v, float):
+        return Value("float32")
+    elif isinstance(v, str):
+        return Value("string")
+    elif isinstance(v, list) or isinstance(v, tuple):
+        return Sequence(feature=get_field_type(v[0]))
+    else:
+        raise ValueError(f"Unsupported type: {type(v)}")
 
 
 @dataclass(kw_only=True)
@@ -62,13 +79,20 @@ class Prompter(ABC, Generic[ConfigType]):
     Subclasses must implement get_prompt and tokenize methods.
     """
 
-    def __init__(self, config: ConfigType):
+    def __init__(self, config: ConfigType, seed: int = 42):
         """Initialize the synthesizer with a configuration."""
         self.config = config
+        self.base_seed = seed
 
     @abstractmethod
-    def get_prompt(self) -> tuple[str, str]:
-        """Generate a prompt and its expected answer."""
+    def get_prompt(self, rng: np.random.Generator) -> tuple[str, str, dict[str, Any]]:
+        """Generate a prompt and its expected answer.
+
+        Returns:
+            prompt: The prompt string.
+            answer: The expected answer string.
+            metadata: A dictionary of metadata about the prompt.
+        """
         pass
 
     @abstractmethod
@@ -97,11 +121,17 @@ class Prompter(ABC, Generic[ConfigType]):
         """Get the name of the dataset."""
         return f"{self.__class__.__name__}_{self.config.get_hash()}".lower()
 
-    def generate_example(self, idx: int) -> tuple[str, str, list[int], list[int]]:
-        """Generate a single example of prompt and answer."""
-        np.random.seed(idx)
-        prompt, answer = self.get_prompt()
-        return prompt, answer, self.tokenize(prompt), self.tokenize(answer)
+    def generate_example(self, idx: int) -> tuple[str, str, dict[str, Any], list[int], list[int]]:
+        """Generate a single example of prompt and answer.
+
+        Returns:
+            prompt: The prompt string.
+            answer: The expected answer string.
+            metadata: A dictionary of metadata about the prompt.
+        """
+        rng = default_rng(self.base_seed + idx)
+        prompt, answer, metadata = self.get_prompt(rng)
+        return prompt, answer, metadata, self.tokenize(prompt), self.tokenize(answer)
 
     def make_dataset(self, path: str, train_size: int, test_size: int, seed: int = 42) -> DatasetDict:
         """Generate a HuggingFace dataset of prompts and answers with config.
@@ -132,8 +162,7 @@ class Prompter(ABC, Generic[ConfigType]):
         answers = []
         prompt_tokens = []
         answer_tokens = []
-        np.random.seed(seed)
-
+        metadatas: dict[str, list[Any]] = {}
         with ProcessPoolExecutor() as executor:
             results = list(
                 tqdm(
@@ -143,11 +172,15 @@ class Prompter(ABC, Generic[ConfigType]):
                 )
             )
 
-        for prompt, answer, prompt_token, answer_token in results:
+        for prompt, answer, metadata, prompt_token, answer_token in results:
             prompts.append(prompt)
             answers.append(answer)
             prompt_tokens.append(prompt_token)
             answer_tokens.append(answer_token)
+            for k, v in metadata.items():
+                if k not in metadatas:
+                    metadatas[k] = []
+                metadatas[k].append(v)
 
         info = DatasetInfo(
             description=str(self.config.data_config),
@@ -157,6 +190,7 @@ class Prompter(ABC, Generic[ConfigType]):
                     "answer": Value("string"),
                     "prompt_tokens": Sequence(feature=Value("int32")),
                     "answer_tokens": Sequence(feature=Value("int32")),
+                    **{k: get_field_type(v) for k, v in metadata.items()},
                 }
             ),
         )
@@ -167,6 +201,7 @@ class Prompter(ABC, Generic[ConfigType]):
                 "answer": answers,
                 "prompt_tokens": prompt_tokens,
                 "answer_tokens": answer_tokens,
+                **metadatas,
             },
             info=info,
         )

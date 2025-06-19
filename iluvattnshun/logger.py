@@ -12,6 +12,11 @@ from torch.utils.tensorboard.writer import SummaryWriter
 
 colorama_init(autoreset=True)
 
+KeyedMetric = dict[str | int | bool, float | int | bool]
+"""E.g. {'A': 10, 'B': 20, 'C': 30}."""
+Loggable = float | str | bool | KeyedMetric
+"""Loggable types are float, str, bool, or a dict of str, int, or bool to float, int, or bool."""
+
 
 class Logger:
     """Creates beautiful colored console log frames and logs to TensorBoard."""
@@ -58,11 +63,16 @@ class Logger:
         self.tb_writer = SummaryWriter(self.log_dir)
         self.log_at_start = log_at_start
 
-    def format_number(self, value: float | int) -> str:
-        """Format number with commas and precision."""
-        if isinstance(value, int):
+    def format_value(self, value: float | int | bool) -> str:
+        """Format value for logging."""
+        if isinstance(value, bool):
+            return "T" if value else "F"
+        elif isinstance(value, float):
+            return f"{value:.{self.precision}f}"
+        elif isinstance(value, int):
             return f"{value:,}"
-        return f"{value:.{self.precision}f}"
+        else:
+            raise ValueError(f"Unsupported value type: {type(value)}")
 
     def format_time(self, seconds: float) -> str:
         """Format time in hours, minutes, and seconds."""
@@ -85,9 +95,9 @@ class Logger:
 
     def write_metrics_to_tensorboard(
         self,
-        metrics: dict[str, float | str],
+        metrics: dict[str, Loggable],
         mode: Literal["train", "val"],
-        header: dict[str, float | str],
+        header: dict[str, str | int | bool],
     ) -> None:
         """Log metrics and header to TensorBoard.
 
@@ -98,10 +108,12 @@ class Logger:
         """
         if self.tb_writer is not None:
             for k, v in metrics.items():
-                if isinstance(v, float) or isinstance(v, int):
+                if isinstance(v, float) or isinstance(v, int) or isinstance(v, bool):
                     self.tb_writer.add_scalar(f"{mode}/{k}", v, self.step[mode])
                 elif isinstance(v, str):
                     self.tb_writer.add_text(f"{mode}/{k}", v, self.step[mode])
+                elif isinstance(v, dict):
+                    self.tb_writer.add_scalars(f"{mode}/{k}", v, self.step[mode])
 
             for k, v in header.items():
                 if isinstance(v, float) or isinstance(v, int):
@@ -111,9 +123,9 @@ class Logger:
 
     def write_metrics_to_console(
         self,
-        metrics: dict[str, float | str],
+        metrics: dict[str, Loggable],
         mode: Literal["train", "val"],
-        header: dict[str, float | str],
+        header: dict[str, str | int | bool],
     ) -> None:
         """Log metrics and header to console.
 
@@ -130,12 +142,18 @@ class Logger:
 
         metric_lines = []
         for name, value in metrics.items():
-            if isinstance(value, float):
+            if isinstance(value, float) or isinstance(value, int):
                 metric_lines.append(
-                    f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}{self.format_number(value)}{Style.RESET_ALL}"
+                    f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}{self.format_value(value)}{Style.RESET_ALL}"
                 )
-            else:
+            elif isinstance(value, str) or isinstance(value, bool):
                 metric_lines.append(f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}{value}{Style.RESET_ALL}")
+            elif isinstance(value, dict):
+                metric_lines.append(f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL}")
+                for k, v in value.items():
+                    metric_lines.append(
+                        f"↳{Fore.WHITE}{k:<20}:{Style.RESET_ALL} {mode_color}{self.format_value(v)}{Style.RESET_ALL}"
+                    )
 
         frame = ["\n", horizontal_rule, header_str, horizontal_rule]
         frame.extend(metric_lines)
@@ -148,9 +166,9 @@ class Logger:
 
     def log_metrics(
         self,
-        metrics: dict[str, float | str],
+        metrics: dict[str, Loggable],
         mode: Literal["train", "val"],
-        header: dict[str, float | str] | None = None,
+        header: dict[str, str | int | bool] | None = None,
     ) -> None:
         """Log metrics and header to TensorBoard and console.
 
@@ -176,7 +194,7 @@ class Logger:
 
         header["step"] = self.step[mode]
         header["time"] = self.format_time(curr_time - self.start_time)
-        header["iter_time"] = self.format_number(iter_time)
+        header["iter_time"] = self.format_value(iter_time)
         header["run_name"] = self.run_name
 
         self.write_metrics_to_tensorboard(metrics, mode, header)
