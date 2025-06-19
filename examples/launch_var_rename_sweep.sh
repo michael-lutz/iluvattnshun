@@ -9,14 +9,14 @@ n=8  # number of grid cells
 GPUs=(0 1 2 3 4 5 6 7)  # List of available GPUs
 
 # define your sweep parameters
-sweeps[0]="--num_layers=1 --chain_length=4"
-sweeps[1]="--num_layers=1 --chain_length=8"
-sweeps[2]="--num_layers=2 --chain_length=4"
-sweeps[3]="--num_layers=2 --chain_length=8"
-sweeps[4]="--num_layers=3 --chain_length=4"
-sweeps[5]="--num_layers=3 --chain_length=8"
-sweeps[6]="--num_layers=3 --num_heads=2"
-sweeps[7]="--num_layers=3 --num_heads=4"
+sweeps[0]="--num_layers=1 --num_heads=1"
+sweeps[1]="--num_layers=2 --num_heads=1"
+sweeps[2]="--num_layers=3 --num_heads=1"
+sweeps[3]="--num_layers=4 --num_heads=1"
+sweeps[4]="--num_layers=3 --num_heads=2"
+sweeps[5]="--num_layers=3 --num_heads=4"
+sweeps[6]="--num_layers=4 --num_heads=1"
+sweeps[7]="--num_layers=4 --num_heads=2"
 
 SESSION_NAME="var_rename_sweep"
 

@@ -210,6 +210,7 @@ class Trainer(ABC, Generic[ConfigType]):
                 # run full evaluation every n samples
                 model.eval()
                 if training_samples >= eval_steps * self.config.eval_every_n_samples:
+                    # TODO: fully support Loggable type (including dicts)
                     eval_metrics: dict[str, float | str] = {}
                     eval_size = 0
 

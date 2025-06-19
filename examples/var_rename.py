@@ -292,7 +292,7 @@ if __name__ == "__main__":
         num_renames=40,
         num_epochs=1000,
         batch_size=1024,
-        eval_every_n_samples=10_000,
+        eval_every_n_samples=1_000_000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",
         tensorboard_logdir="logs/var_rename",
