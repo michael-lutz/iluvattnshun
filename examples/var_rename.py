@@ -13,6 +13,9 @@ from iluvattnshun.prompter import PromptConfig, Prompter
 from iluvattnshun.trainer import Trainer, TrainerConfig
 from iluvattnshun.types import TensorTree
 
+MASK_TOKEN = "."
+MASK_ID = 38
+
 
 @dataclass
 class VariableRenamingConfig(PromptConfig, TrainerConfig):
@@ -96,7 +99,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
             char_to_token[c] = ord(c) - ord("a") + 10
         char_to_token[">"] = 36
         char_to_token["|"] = 37
-        char_to_token["."] = -1
+        char_to_token["."] = 38
         return char_to_token
 
     def tokenize(self, text: str) -> list[int]:
@@ -107,7 +110,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         - Letters a-z -> tokens 10-35
         - '>' -> token 36
         - '|' -> token 37
-        - '.' -> token -1 (mask)
+        - '.' -> token 38 (mask)
         """
         tokens = []
         for c in text:
@@ -121,7 +124,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         - Tokens 0-9 -> Numbers 0-9
         - Tokens 10-35 -> Letters a-z
         - Tokens 36-37 -> '>', '|'
-        - Token -1 -> '.' (mask)
+        - Token 38 -> '.' (mask)
         """
         inverse_tokenization_map: dict[int, str] = {v: k for k, v in self._tokenization_map.items()}
         return "".join([inverse_tokenization_map[token] for token in tokens])
@@ -140,6 +143,19 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
             seed=42,
         )
         self.ds_dict.set_format(type="torch", columns=["prompt_tokens", "answer_tokens", "prompt", "answer"])
+
+        # log train test stats
+        train_prompts = set(self.ds_dict["train"]["prompt"])
+        test_prompts = set(self.ds_dict["test"]["prompt"])
+        train_total = len(self.ds_dict["train"])
+        train_unique = len(train_prompts)
+        train_duplicates = train_total - train_unique
+        overlap_with_train = test_prompts.intersection(train_prompts)
+        self.logger.log_text(
+            "train_test_stats.txt",
+            f"[Train Set] Total: {train_total}, Unique: {train_unique}, Duplicates: {train_duplicates}\n"
+            f"[Test Set] {len(overlap_with_train)} out of {len(test_prompts)} are also in the train set.",
+        )
 
     def get_model(self) -> nn.Module:
         """Get the model."""
@@ -162,14 +178,14 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
         Example prompt and answer (where . is masked out):
             Prompt:  "|1>a|2>b|a>c|b>d"
-            Mask:    "0001000100010001"
+            Mask:    "0101010101010101"
             Answers: " 1 1 2 2 1 1 2 2"
         """
-        x = batch["input"]  # (batch, seq)
-        y = batch["answer"]  # (batch, seq)
-        mask = (x != -1).long()  # (batch, seq)
+        x = batch["prompt_tokens"]  # (batch, seq)
+        y = batch["answer_tokens"]  # (batch, seq)
+        mask = (y != MASK_ID).long()  # (batch, seq)
 
-        logits = model(x)  # (batch, seq, vocab_size)
+        logits, _, _ = model(x)  # (batch, seq, vocab_size)
         vocab_size = logits.shape[-1]
 
         # flatten for masked loss computation
@@ -186,22 +202,38 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
     def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """Get additional validation metrics for a batch."""
-        predicted_answers = preds.argmax(dim=-1)
-        sample_prompt = batch["prompt"][0]
-        sample_answer = batch["answer"][0]
-        sample_predicted_answer = predicted_answers[0]
-        sample_probability = torch.softmax(preds[0], dim=-1)[sample_predicted_answer]
+        predicted_answers = preds.argmax(dim=-1)  # (batch, seq)
+        target = batch["answer_tokens"].to(predicted_answers.device)  # (batch, seq)
+        mask = target != MASK_ID  # (batch, seq)
 
-        target = batch["answer_tokens"].to(predicted_answers.device)
-        correct = (predicted_answers.unsqueeze(-1) == target).float()
-        total_accuracy = torch.mean(correct).item()
+        # accuracy only over masked positions
+        correct = ((predicted_answers == target) & mask).float()
+        total_accuracy = correct.sum() / mask.sum()
+
+        # sample info for logging
+        sample_idx = 0
+        sample_prompt = batch["prompt"][sample_idx]
+        sample_answer = batch["answer"][sample_idx]
+        sample_pred_token_ids = predicted_answers[sample_idx].tolist()
+        predicted_answer = self.prompter.detokenize(sample_pred_token_ids)
+        predicted_answer = "".join(c if i % 2 else "." for i, c in enumerate(predicted_answer))
+        correct = "".join(
+            "." if sample_answer[i] == MASK_TOKEN else "✓" if sample_answer[i] == predicted_answer[i] else "✗"
+            for i in range(len(sample_answer))
+        )
+        sample_logits = preds[sample_idx]
+
+        # find the probability of each predicted token
+        sample_probs = torch.softmax(sample_logits, dim=-1)  # (seq, vocab)
+        sample_pred_probs = sample_probs[torch.arange(sample_probs.size(0)), sample_pred_token_ids]  # (seq,)
 
         return {
             "sample_prompt": sample_prompt,
             "sample_answer": sample_answer,
-            "predicted_answer": str(sample_predicted_answer.item()),
-            "probability": sample_probability.item(),
-            "accuracy": total_accuracy,
+            "predicted_answer": predicted_answer,
+            "correct": correct,
+            "probability": sample_pred_probs.mean().item(),  # avg probability of predicted tokens
+            "accuracy": total_accuracy.item(),
         }
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
@@ -235,8 +267,8 @@ if __name__ == "__main__":
         # train_size=10_000_000,
         train_size=10_000,
         test_size=10_000,
-        num_chains=10,
-        chain_length=20,
+        num_chains=2,
+        chain_length=16,
         num_epochs=1000,
         batch_size=1024,
         eval_every_n_samples=10_000,

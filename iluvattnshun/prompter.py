@@ -3,6 +3,7 @@
 import hashlib
 import os
 from abc import ABC, abstractmethod
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import Generic, Hashable, TypeVar
 
@@ -16,6 +17,7 @@ from datasets import (
     Value,
     load_from_disk,
 )
+from tqdm import tqdm
 
 
 @dataclass(kw_only=True)
@@ -95,6 +97,12 @@ class Prompter(ABC, Generic[ConfigType]):
         """Get the name of the dataset."""
         return f"{self.__class__.__name__}_{self.config.get_hash()}".lower()
 
+    def generate_example(self, idx: int) -> tuple[str, str, list[int], list[int]]:
+        """Generate a single example of prompt and answer."""
+        np.random.seed(idx)
+        prompt, answer = self.get_prompt()
+        return prompt, answer, self.tokenize(prompt), self.tokenize(answer)
+
     def make_dataset(self, path: str, train_size: int, test_size: int, seed: int = 42) -> DatasetDict:
         """Generate a HuggingFace dataset of prompts and answers with config.
 
@@ -124,14 +132,22 @@ class Prompter(ABC, Generic[ConfigType]):
         answers = []
         prompt_tokens = []
         answer_tokens = []
-        np.random.seed(seed)  # if ever do multiproc, rethink...
+        np.random.seed(seed)
 
-        for _ in range(train_size + test_size):
-            prompt, answer = self.get_prompt()
+        with ProcessPoolExecutor() as executor:
+            results = list(
+                tqdm(
+                    executor.map(self.generate_example, range(train_size + test_size)),
+                    total=train_size + test_size,
+                    desc="Generating dataset",
+                )
+            )
+
+        for prompt, answer, prompt_token, answer_token in results:
             prompts.append(prompt)
             answers.append(answer)
-            prompt_tokens.append(self.tokenize(prompt))
-            answer_tokens.append(self.tokenize(answer))
+            prompt_tokens.append(prompt_token)
+            answer_tokens.append(answer_token)
 
         info = DatasetInfo(
             description=str(self.config.data_config),
