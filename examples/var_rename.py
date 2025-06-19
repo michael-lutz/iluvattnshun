@@ -249,16 +249,11 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
             for i in range(len(sample_answer))
         )
 
-        sample_logits = preds[sample_idx]
-        sample_probs = torch.softmax(sample_logits, dim=-1)
-        sample_pred_probs = sample_probs[torch.arange(sample_probs.size(0)), sample_pred_token_ids]
-
         return {
             "sample_prompt": sample_prompt,
             "sample_answer": sample_answer,
-            "predicted_answer": predicted_answer,
-            "correct": correct_str,
-            "probability": sample_pred_probs.mean().item(),
+            "sample_pred": predicted_answer,
+            "sample_correct": correct_str,
             "accuracy": total_accuracy.item(),
             **depth_metrics,
         }
@@ -291,8 +286,7 @@ if __name__ == "__main__":
         num_layers=3,
         dim_model=128,
         num_heads=4,
-        # train_size=10_000_000,
-        train_size=10_000,
+        train_size=1_000_000,  # Ideally larger when we speed up generation
         test_size=10_000,
         num_chains=2,
         num_renames=40,

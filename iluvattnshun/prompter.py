@@ -163,11 +163,13 @@ class Prompter(ABC, Generic[ConfigType]):
         prompt_tokens = []
         answer_tokens = []
         metadatas: dict[str, list[Any]] = {}
+
+        dataset_size = train_size + test_size
         with ProcessPoolExecutor() as executor:
             results = list(
                 tqdm(
-                    executor.map(self.generate_example, range(train_size + test_size)),
-                    total=train_size + test_size,
+                    executor.map(self.generate_example, range(dataset_size)),
+                    total=dataset_size,
                     desc="Generating dataset",
                 )
             )
