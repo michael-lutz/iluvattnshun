@@ -26,6 +26,8 @@ class ShakespeareConfig(TrainerConfig):
     """Dimension of the model."""
     n_heads: int
     """Number of attention heads."""
+    rope_base: int
+    """Base for the rotary positional embedding."""
 
 
 def load_shakespeare_text(split: str = "train") -> str:
@@ -70,12 +72,12 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
             d_model=self.config.d_model,
             n_heads=self.config.n_heads,
             n_layers=self.config.num_layers,
-            max_seq_len=self.config.max_context_length,
+            rope_base=self.config.rope_base,
         )
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Returns a basic Adam optimizer."""
-        return optim.Adam(model.parameters(), lr=1e-3)
+        return optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-1)
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the cross-entropy loss over the final token logits."""
@@ -151,12 +153,14 @@ if __name__ == "__main__":
         num_layers=8,
         d_model=128,
         n_heads=4,
+        rope_base=1024,
         max_context_length=128,
         num_epochs=-1,  # using IID sampling, not epochal training
         batch_size=64,
-        eval_every_n_samples=40000,
+        eval_every_n_samples=20000,
         log_every_n_seconds=3,
         tensorboard_logdir="logs/shakespeare",
+        run_name="shakespeare",
     )
     trainer = ShakespeareTrainer(config)
     trainer.run()
