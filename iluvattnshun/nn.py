@@ -7,10 +7,55 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class RotaryEmbedding(nn.Module):
+    """Rotary Positional Embedding (RoPE) implementation.
+
+    Implemented as module to avoid recomputing the inv_freq tensor.
+    """
+
+    def __init__(self, d_model: int, base: int = 10000):
+        super().__init__()
+        # getting the inverse frequency θ_i in the RoPE paper
+        inv_freq = base ** (-torch.arange(0, d_model, 2).float() / d_model)  # (d_model // 2,)
+        self.register_buffer("inv_freq", inv_freq)
+
+    def forward(self, x: torch.Tensor, offset: int = 0) -> torch.Tensor:
+        """Forward pass through the rotary positional embedding.
+
+        Args:
+            x: Input tensor of shape (..., seq_len, d_model)
+            offset: Offset to apply to the sequence length
+
+        Returns:
+            Output tensor of shape (batch_size, seq_len, d_model)
+        """
+        # TODO: optimize training by caching sin and cos values
+
+        d_model = x.size(-1)
+        seq_len = x.size(-2)
+        assert d_model % 2 == 0, "d_model must be even"
+
+        # getting positional embeddings pre-rotation
+        pos = torch.arange(start=offset, end=seq_len + offset, device=x.device, dtype=torch.float32)
+        pos_emb = torch.einsum("i,j->ij", pos, self.inv_freq)  # (seq_len, d_model // 2)
+
+        # getting the sin and cos values
+        sin = torch.sin(pos_emb)
+        cos = torch.cos(pos_emb)
+
+        # applying the rotary positional embedding (keeping interleaved)
+        x_even, x_odd = x[..., 0::2], x[..., 1::2]
+        x_rotated = torch.empty_like(x)
+        x_rotated[..., 0::2] = x_even * cos - x_odd * sin
+        x_rotated[..., 1::2] = x_even * sin + x_odd * cos
+        assert x_rotated.shape == x.shape, "something went horribly wrong."  # TODO: remove if never hit...
+        return x_rotated
+
+
 class Attention(nn.Module):
     """A simple attention module with KV caching support."""
 
-    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
+    def __init__(self, embed_dim: int, num_heads: int, rope_base: int):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -23,7 +68,9 @@ class Attention(nn.Module):
         self.v_proj = nn.Linear(embed_dim, embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
-        self.dropout = nn.Dropout(dropout)  # TODO: investigate dropout effect...
+        # RoPE
+        self.rotary_embedding = RotaryEmbedding(self.head_dim, rope_base)
+
         self.scale = self.head_dim**-0.5
 
     def forward(
@@ -67,10 +114,26 @@ class Attention(nn.Module):
         k = k.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
         v = v.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
 
-        # handle kv cache if provided
+        # handle kv cache if provided (will already have RoPE applied)
         if key is not None and value is not None:
+            assert (
+                len(key.shape) == 4
+                and key.shape[0] == batch_size
+                and key.shape[1] == self.num_heads
+                and value.shape == key.shape
+            ), "key and value must have shape (batch, heads, seq, head_dim)"
+
+            # apply RoPE with offset
+            num_cached_tokens = key.size(2)
+            q = self.rotary_embedding(q, offset=num_cached_tokens)
+            k = self.rotary_embedding(k, offset=num_cached_tokens)
+
             k = torch.cat([key, k], dim=2)  # (batch, heads, seq + cached, head_dim)
             v = torch.cat([value, v], dim=2)
+        else:
+            # apply RoPE without offset
+            q = self.rotary_embedding(q)
+            k = self.rotary_embedding(k)
 
         # compute attention scores
         assert x.device == k.device == v.device, "x, k, v must be on the same device"
@@ -85,26 +148,23 @@ class Attention(nn.Module):
         if key_padding_mask is not None:
             attn = attn.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(2), float("-inf"))
 
-        # apply softmax and dropout
+        # apply softmax and compute output
         attn_weights = F.softmax(attn, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        # compute output
         output = torch.matmul(attn_weights, v)
         output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
         output = self.out_proj(output)
 
-        attention_weights = attn_weights if return_attn_weights else None
-        new_kv_cache = (k, v) if return_new_kv_cache else None
-        return output, attention_weights, new_kv_cache
+        returned_attn_weights = attn_weights if return_attn_weights else None
+        returned_new_kv_cache = (k, v) if return_new_kv_cache else None
+        return output, returned_attn_weights, returned_new_kv_cache
 
 
 class TransformerLayer(nn.Module):
     """A single transformer layer."""
 
-    def __init__(self, d_model: int, n_heads: int):
+    def __init__(self, d_model: int, n_heads: int, rope_base: int):
         super().__init__()
-        self.attention = Attention(d_model, n_heads)
+        self.attention = Attention(d_model, n_heads, rope_base)
         self.norm1 = nn.LayerNorm(d_model)
         self.mlp = nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
         self.norm2 = nn.LayerNorm(d_model)
@@ -153,23 +213,22 @@ class TransformerLayer(nn.Module):
 
 
 class MultilayerTransformer(nn.Module):
-    """A multilayer transformer model."""
+    """A multilayer transformer model with RoPE."""
 
     def __init__(
         self,
         vocab_size: int,
-        d_model: int,
-        n_heads: int,
-        n_layers: int,
-        max_seq_len: int,
+        d_model: int = 512,
+        n_heads: int = 8,
+        n_layers: int = 12,
+        rope_base: int = 10000,
     ):
         super().__init__()
         self.d_model = d_model
 
         self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
-        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)  # Scale during initialization
-        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
-        self.layers = nn.ModuleList([TransformerLayer(d_model, n_heads) for _ in range(n_layers)])
+        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)
+        self.layers = nn.ModuleList([TransformerLayer(d_model, n_heads, rope_base=rope_base) for _ in range(n_layers)])
         self.output = nn.Linear(d_model, vocab_size)
 
     def forward(
@@ -188,22 +247,13 @@ class MultilayerTransformer(nn.Module):
         Args:
             x: Input tensor of shape (batch_size, seq_len)
             kv_cache: Optional list of (key, value) tuples for each layer
-                      shape (batch_size, num_heads, seq_len, d_model/num_heads)
             return_attn_weights: Whether to return attention weights
             return_new_kv_cache: Whether to return new KV cache
 
         Returns:
             Tuple of (output logits, attention weights, new kv_cache)
         """
-        batch_size, _ = x.shape
-
-        # get learned positional embeddings
-        # TODO: add RoPE / nonparametric positional embeddings
-        past_len = kv_cache[0][0].shape[2] if kv_cache is not None else 0
-        pos = torch.arange(past_len, past_len + x.size(1), device=x.device).unsqueeze(0).expand(batch_size, -1)
-
-        x = self.token_embedding(x) + self.pos_embedding(pos)
-
+        x = self.token_embedding(x)  # (batch_size, seq_len, d_model)
         new_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = [] if return_new_kv_cache else None
         attn_weights: list[torch.Tensor] | None = [] if return_attn_weights else None
         for i, layer in enumerate(self.layers):
