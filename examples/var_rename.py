@@ -309,7 +309,7 @@ if __name__ == "__main__":
         test_size=10_000,
         num_chains=2,
         num_renames=40,
-        learning_rate=1e-3,
+        learning_rate=1e-4,
         weight_decay=1e-1,
         batch_size=512,
         num_epochs=1000,
