@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import Dropout
 
 
 class RotaryEmbedding(nn.Module):
@@ -162,11 +163,13 @@ class Attention(nn.Module):
 class TransformerLayer(nn.Module):
     """A single transformer layer."""
 
-    def __init__(self, d_model: int, n_heads: int, rope_base: int):
+    def __init__(self, d_model: int, n_heads: int, rope_base: int, dropout_attn: float = 0.1, dropout_mlp: float = 0.1):
         super().__init__()
         self.attention = Attention(d_model, n_heads, rope_base)
         self.norm1 = nn.LayerNorm(d_model)
+        self.dropout_attn = Dropout(dropout_attn)
         self.mlp = nn.Sequential(nn.Linear(d_model, 4 * d_model), nn.GELU(), nn.Linear(4 * d_model, d_model))
+        self.dropout_mlp = Dropout(dropout_mlp)
         self.norm2 = nn.LayerNorm(d_model)
 
     def forward(
@@ -205,9 +208,9 @@ class TransformerLayer(nn.Module):
                 return_new_kv_cache=return_new_kv_cache,
             )
 
-        x = x + attn_out
+        x = x + self.dropout_attn(attn_out)
         mlp_out = self.mlp(self.norm2(x))
-        x = x + mlp_out
+        x = x + self.dropout_mlp(mlp_out)
 
         return x, attn_weights, new_kv_cache
 
@@ -222,13 +225,24 @@ class MultilayerTransformer(nn.Module):
         n_heads: int = 8,
         n_layers: int = 12,
         rope_base: int = 10000,
+        dropout_attn: float = 0.1,
+        dropout_mlp: float = 0.1,
+        dropout_emb: float = 0.1,
     ):
         super().__init__()
         self.d_model = d_model
 
         self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
         nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)
-        self.layers = nn.ModuleList([TransformerLayer(d_model, n_heads, rope_base=rope_base) for _ in range(n_layers)])
+        self.dropout_emb = Dropout(dropout_emb)
+        self.layers = nn.ModuleList(
+            [
+                TransformerLayer(
+                    d_model, n_heads, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp
+                )
+                for _ in range(n_layers)
+            ]
+        )
         self.output = nn.Linear(d_model, vocab_size)
 
     def forward(
@@ -254,6 +268,7 @@ class MultilayerTransformer(nn.Module):
             Tuple of (output logits, attention weights, new kv_cache)
         """
         x = self.token_embedding(x)  # (batch_size, seq_len, d_model)
+        x = self.dropout_emb(x)
         new_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = [] if return_new_kv_cache else None
         attn_weights: list[torch.Tensor] | None = [] if return_attn_weights else None
         for i, layer in enumerate(self.layers):

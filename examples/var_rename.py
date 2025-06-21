@@ -29,6 +29,20 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Dimension of the model."""
     num_heads: int
     """Number of attention heads."""
+    dropout_attn: float
+    """Dropout rate for the attention layer."""
+    dropout_mlp: float
+    """Dropout rate for the MLP layer."""
+    dropout_emb: float
+    """Dropout rate for the embedding layer."""
+    rope_base: float
+    """Base for the Rope positional encoding."""
+
+    # training
+    learning_rate: float
+    """Learning rate."""
+    weight_decay: float
+    """Weight decay."""
 
     # data generation
     num_chains: int
@@ -57,7 +71,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         """Samples a variable renaming prompt and answers.
 
         Example prompt: "1>a;2>b;a>c;b>d;d>e;"
-        Answers:        "1.1.2.2.1.1.2.2.2.2;" where "." means <MASK>
+        Answers:        "..1...2...1...2...2;" where "." means <MASK>
         Depths:         "0000000011111111222;"
 
         When redefining, only sample from variables which are not currently at
@@ -98,7 +112,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
 
             # keeping same lengths for simplicity downstream
             prompt_parts.append(f"{old_var}>{new_var};")
-            answer_parts.append(f"{eval_strs[chain_idx]}.{eval_strs[chain_idx]}.")
+            answer_parts.append(f"..{eval_strs[chain_idx]}.")
             depth_parts.extend([eval_depths[chain_idx]] * 4)
 
             # update active variables and state trackers
@@ -178,19 +192,21 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
     def get_model(self) -> nn.Module:
         """Get the model."""
-        max_seq_len = self.config.num_renames * 4
         model = MultilayerTransformer(
             vocab_size=39,
             d_model=self.config.dim_model,
             n_heads=self.config.num_heads,
             n_layers=self.config.num_layers,
-            max_seq_len=max_seq_len,
+            rope_base=self.config.rope_base,
+            dropout_attn=self.config.dropout_attn,
+            dropout_mlp=self.config.dropout_mlp,
+            dropout_emb=self.config.dropout_emb,
         )
         return model
 
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Returns a basic Adam optimizer."""
-        return optim.Adam(model.parameters(), lr=1e-3)
+        return optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the cross-entropy loss over the final token logits.
@@ -243,7 +259,6 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         sample_answer = batch["answer"][sample_idx]
         sample_pred_token_ids = predicted_answers[sample_idx].tolist()
         predicted_answer = self.prompter.detokenize(sample_pred_token_ids)
-        predicted_answer = "".join("." if i % 2 else c for i, c in enumerate(predicted_answer))
         correct_str = "".join(
             "." if sample_answer[i] == MASK_TOKEN else "✓" if sample_answer[i] == predicted_answer[i] else "✗"
             for i in range(len(sample_answer))
@@ -286,12 +301,18 @@ if __name__ == "__main__":
         num_layers=3,
         dim_model=128,
         num_heads=4,
+        dropout_attn=0.0,
+        dropout_mlp=0.1,
+        dropout_emb=0.1,
+        rope_base=1000.0,
         train_size=1_000_000,  # Ideally larger when we speed up generation
         test_size=10_000,
         num_chains=2,
         num_renames=40,
+        learning_rate=1e-3,
+        weight_decay=1e-1,
+        batch_size=512,
         num_epochs=1000,
-        batch_size=1024,
         eval_every_n_samples=1_000_000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",
