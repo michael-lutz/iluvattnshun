@@ -214,9 +214,9 @@ class Trainer(ABC, Generic[ConfigType]):
                     eval_metrics: dict[str, float | str] = {}
                     eval_size = 0
 
-                    for batch in val_loader:
-                        batch = move_to_device(batch, self.config.device)
-                        metrics = self.val_step(model, batch)
+                    for val_batch in val_loader:
+                        val_batch = move_to_device(val_batch, self.config.device)
+                        metrics = self.val_step(model, val_batch)
 
                         # handle float and string metrics separately
                         for k, v in metrics.items():
