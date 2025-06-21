@@ -5,12 +5,12 @@ import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 
 
-def viz_attn(
+def get_fig(
     attn_weights: list[np.ndarray],
     token_labels: list[str],
     plot_size: tuple[int, int] = (1000, 1000),
     font_size: int = 10,
-) -> None:
+) -> go.Figure:
     """Visualize attention weights using Plotly.
 
     Args:
@@ -81,4 +81,4 @@ def viz_attn(
         showlegend=False,
     )
 
-    fig.show()
+    return fig
