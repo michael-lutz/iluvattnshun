@@ -9,14 +9,17 @@ n=8  # number of grid cells
 GPUs=(0 1 2 3 4 5 6 7)  # List of available GPUs
 
 # define your sweep parameters
-sweeps[0]="--num_layers=1 --num_heads=1"
-sweeps[1]="--num_layers=2 --num_heads=1"
-sweeps[2]="--num_layers=3 --num_heads=1"
-sweeps[3]="--num_layers=4 --num_heads=1"
-sweeps[4]="--num_layers=3 --num_heads=2"
-sweeps[5]="--num_layers=3 --num_heads=4"
-sweeps[6]="--num_layers=4 --num_heads=1"
-sweeps[7]="--num_layers=4 --num_heads=2"
+
+# testing with 4 heads, 1-4 layers
+sweeps[0]="--num_layers=1 --num_heads=4" # ablating away one hop shortcut (this should fail)
+sweeps[1]="--num_layers=2 --num_heads=4" # 16 if 4^2, or 8 if only matters at front
+sweeps[2]="--num_layers=3 --num_heads=4" # 32 if ..., 16 otherwise
+sweeps[3]="--num_layers=4 --num_heads=4 --learning_rate=1e-3" # new learning rate with grad clipping
+# testing with 8 layers, 1-4 heads
+sweeps[4]="--num_layers=4 --num_heads=1" # should be able to hit 8
+sweeps[5]="--num_layers=4 --num_heads=2" # maybe 16?? (depends on if can consistently use heads later down)
+sweeps[6]="--num_layers=4 --num_heads=3" # maybe 24??
+sweeps[7]="--num_layers=3 --num_heads=2" # to confirm the relationship...
 
 SESSION_NAME="var_rename_sweep"
 
