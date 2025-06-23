@@ -56,7 +56,7 @@ class RotaryEmbedding(nn.Module):
 class Attention(nn.Module):
     """A simple attention module with KV caching support."""
 
-    def __init__(self, embed_dim: int, num_heads: int, rope_base: int):
+    def __init__(self, embed_dim: int, num_heads: int, rope_base: float):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -163,7 +163,9 @@ class Attention(nn.Module):
 class TransformerLayer(nn.Module):
     """A single transformer layer."""
 
-    def __init__(self, d_model: int, n_heads: int, rope_base: int, dropout_attn: float = 0.1, dropout_mlp: float = 0.1):
+    def __init__(
+        self, d_model: int, n_heads: int, rope_base: float, dropout_attn: float = 0.1, dropout_mlp: float = 0.1
+    ):
         super().__init__()
         self.attention = Attention(d_model, n_heads, rope_base)
         self.norm1 = nn.LayerNorm(d_model)
@@ -224,7 +226,7 @@ class MultilayerTransformer(nn.Module):
         d_model: int = 512,
         n_heads: int = 8,
         n_layers: int = 12,
-        rope_base: int = 10000,
+        rope_base: float = 10000.0,
         dropout_attn: float = 0.1,
         dropout_mlp: float = 0.1,
         dropout_emb: float = 0.1,
