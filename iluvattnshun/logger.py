@@ -68,7 +68,11 @@ class Logger:
         if isinstance(value, bool):
             return "T" if value else "F"
         elif isinstance(value, float):
-            return f"{value:.{self.precision}f}"
+            # use scientific notation for very small numbers
+            if abs(value) < 10 ** (-self.precision + 1) and value != 0:
+                return f"{value:.{self.precision}e}"
+            else:
+                return f"{value:.{self.precision}f}"
         elif isinstance(value, int):
             return f"{value:,}"
         else:

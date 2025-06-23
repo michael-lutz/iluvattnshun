@@ -152,7 +152,7 @@ class Trainer(ABC, Generic[ConfigType]):
 
         current_lr = optimizer.param_groups[0]["lr"]
 
-        return {"loss": loss.item(), "lr": str(current_lr), "grad_norm": grad_norm.item()}
+        return {"loss": loss.item(), "lr": current_lr, "grad_norm": grad_norm.item()}
 
     def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
         """Returns eval metrics."""
