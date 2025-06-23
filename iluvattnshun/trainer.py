@@ -229,27 +229,28 @@ class Trainer(ABC, Generic[ConfigType]):
             epoch = self.config.num_epochs - epoch_dec
             for batch in train_loader:
                 # run full evaluation every n samples
-                model.eval()
                 if training_samples >= eval_steps * self.config.eval_every_n_samples:
-                    # TODO: fully support Loggable type (including dicts)
-                    eval_metrics: dict[str, float | str] = {}
-                    eval_size = 0
+                    model.eval()
+                    with torch.no_grad():
+                        # TODO: fully support Loggable type (including dicts)
+                        eval_metrics: dict[str, float | str] = {}
+                        eval_size = 0
 
-                    for val_batch in val_loader:
-                        val_batch = move_to_device(val_batch, self.config.device)
-                        metrics = self.val_step(model, val_batch)
+                        for val_batch in val_loader:
+                            val_batch = move_to_device(val_batch, self.config.device)
+                            metrics = self.val_step(model, val_batch)
 
-                        # handle float and string metrics separately
-                        for k, v in metrics.items():
-                            if isinstance(v, float):
-                                if k not in eval_metrics:
-                                    eval_metrics[k] = 0.0
-                                prev = eval_metrics[k]
-                                assert isinstance(prev, float)
-                                eval_metrics[k] = prev + v
-                            else:
-                                eval_metrics[k] = v  # only keep the last string
-                        eval_size += 1
+                            # handle float and string metrics separately
+                            for k, v in metrics.items():
+                                if isinstance(v, float):
+                                    if k not in eval_metrics:
+                                        eval_metrics[k] = 0.0
+                                    prev = eval_metrics[k]
+                                    assert isinstance(prev, float)
+                                    eval_metrics[k] = prev + v
+                                else:
+                                    eval_metrics[k] = v  # only keep the last string
+                            eval_size += 1
 
                     # average the float metrics
                     eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}

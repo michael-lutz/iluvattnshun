@@ -303,7 +303,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         return torch.utils.data.DataLoader(
             self.ds_dict["test"],
             batch_size=self.config.batch_size,
-            shuffle=True,
+            shuffle=False,
             prefetch_factor=4,
             num_workers=4,
         )
@@ -313,7 +313,7 @@ if __name__ == "__main__":
     # Example usage (config gets overridden by CLI args):
     # python -m examples.var_rename --num_layers=3 --overwrite_existing_checkpoints
     config = VariableRenamingConfig(
-        num_layers=4,
+        num_layers=8,
         dim_model=128,
         num_heads=4,
         dropout_attn=0.0,
