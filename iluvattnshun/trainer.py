@@ -3,14 +3,13 @@
 import os
 import sys
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from time import time
-from typing import Generic, Iterable, Literal, TypeVar
+from typing import Any, Generic, Iterable, Literal, TypeVar
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import yaml
 
 from iluvattnshun.logger import Logger
 from iluvattnshun.types import TensorTree
@@ -36,6 +35,8 @@ class TrainerConfig:
     """Device to use for training."""
     eval_every_n_samples: int
     """Evaluate every n samples."""
+    grad_norm_max: float = 1.0
+    """Maximum gradient norm."""
 
     # Logging
     log_every_n_seconds: float = 30.0
@@ -107,6 +108,10 @@ class Trainer(ABC, Generic[ConfigType]):
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Get the optimizer."""
 
+    def get_scheduler(self, optimizer: optim.Optimizer) -> optim.lr_scheduler.LRScheduler | None:
+        """(Optional) Get the learning rate scheduler."""
+        return None
+
     @abstractmethod
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Get loss and predictions for a batch."""
@@ -127,15 +132,27 @@ class Trainer(ABC, Generic[ConfigType]):
     def get_val_dataloader(self) -> Iterable[TensorTree]:
         """Get the val dataloader."""
 
-    def train_step(self, model: nn.Module, optimizer: optim.Optimizer, batch: TensorTree) -> dict[str, float | str]:
+    def train_step(
+        self,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        scheduler: optim.lr_scheduler.LRScheduler | None,
+        batch: TensorTree,
+    ) -> dict[str, float | str]:
         """Train step."""
         # TODO: think about ownership of .train and .zero_grad for safe override
         assert model.training, "Model must be in training mode"
         optimizer.zero_grad()
         loss, _ = self.get_loss(model, batch)
         loss.backward()
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.config.grad_norm_max)
         optimizer.step()
-        return {"loss": loss.item()}
+        if scheduler is not None:
+            scheduler.step()
+
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        return {"loss": loss.item(), "lr": str(current_lr), "grad_norm": grad_norm.item()}
 
     def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
         """Returns eval metrics."""
@@ -152,6 +169,7 @@ class Trainer(ABC, Generic[ConfigType]):
         epoch: int,
         step: dict[Literal["train", "val"], int],
         metrics: dict[str, float | str],
+        scheduler: optim.lr_scheduler.LRScheduler | None = None,
     ) -> None:
         """Save a checkpoint of the model and training state."""
         if self.config.overwrite_existing_checkpoints:
@@ -167,6 +185,7 @@ class Trainer(ABC, Generic[ConfigType]):
             epoch=epoch,
             step=step,
             metrics=metrics,
+            scheduler=scheduler,
         )
         self.logger.log_text(
             "Checkpointing",
@@ -179,6 +198,7 @@ class Trainer(ABC, Generic[ConfigType]):
         """Creates or loads training variables and begins training."""
         model = self.get_model().to(self.config.device)
         optimizer = self.get_optimizer(model)
+        scheduler = self.get_scheduler(optimizer)
         train_loader = self.get_train_dataloader()
         val_loader = self.get_val_dataloader()
 
@@ -189,6 +209,7 @@ class Trainer(ABC, Generic[ConfigType]):
                 self.config.load_model_path,
                 model=model,
                 optimizer=optimizer,
+                scheduler=scheduler,
                 map_location=self.config.device,
             )
             start_epoch = epoch
@@ -244,7 +265,7 @@ class Trainer(ABC, Generic[ConfigType]):
                 model.train()
                 training_samples += self.config.batch_size
                 batch = move_to_device(batch, self.config.device)
-                metrics = self.train_step(model, optimizer, batch)
+                metrics = self.train_step(model, optimizer, scheduler, batch)
                 self.logger.log_metrics(
                     metrics,
                     mode="train",
@@ -256,7 +277,7 @@ class Trainer(ABC, Generic[ConfigType]):
                 self.config.save_every_n_seconds > 0
                 and time() - self.last_checkpoint_time >= self.config.save_every_n_seconds
             ):
-                self.save_checkpoint(model, optimizer, epoch + 1, self.logger.step, metrics)
+                self.save_checkpoint(model, optimizer, epoch + 1, self.logger.step, metrics, scheduler)
                 self.last_checkpoint_time = time()
 
             epoch_dec -= 1

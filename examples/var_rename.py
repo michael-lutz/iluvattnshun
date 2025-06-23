@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from iluvattnshun.nn import MultilayerTransformer
 from iluvattnshun.prompter import PromptConfig, Prompter
@@ -43,6 +44,10 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Learning rate."""
     weight_decay: float
     """Weight decay."""
+    warmup_steps: int
+    """Number of batches until the learning rate is warmed up."""
+    lr_start_factor: float
+    """What to multiply the learning rate by at the start of warmup."""
 
     # data generation
     num_chains: int
@@ -57,7 +62,7 @@ class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Path to the dataset."""
 
     def data_hash_params(self) -> list[str]:
-        return ["num_chains", "chain_length", "train_size", "test_size"]
+        return ["num_chains", "num_renames", "train_size", "test_size"]
 
 
 class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
@@ -71,8 +76,8 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         """Samples a variable renaming prompt and answers.
 
         Example prompt: "1>a;2>b;a>c;b>d;d>e;"
-        Answers:        "..1...2...1...2...2;" where "." means <MASK>
-        Depths:         "0000000011111111222;"
+        Answers:        "1.1.2.2.1.1.2.2.2.2." where "." means <MASK>
+        Depths:         "00000000111111112222"
 
         When redefining, only sample from variables which are not currently at
         the end of any chain (no DAG structure).
@@ -112,7 +117,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
 
             # keeping same lengths for simplicity downstream
             prompt_parts.append(f"{old_var}>{new_var};")
-            answer_parts.append(f"..{eval_strs[chain_idx]}.")
+            answer_parts.append(f"{eval_strs[chain_idx]}.{eval_strs[chain_idx]}.")
             depth_parts.extend([eval_depths[chain_idx]] * 4)
 
             # update active variables and state trackers
@@ -208,6 +213,16 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         """Returns a basic Adam optimizer."""
         return optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
 
+    def get_scheduler(self, optimizer: optim.Optimizer) -> LinearLR | None:
+        """Returns a learning rate scheduler."""
+        if self.config.warmup_steps == 0:
+            return None
+
+        scheduler = LinearLR(
+            optimizer, start_factor=self.config.lr_start_factor, end_factor=1.0, total_iters=self.config.warmup_steps
+        )
+        return scheduler
+
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the cross-entropy loss over the final token logits.
 
@@ -298,7 +313,7 @@ if __name__ == "__main__":
     # Example usage (config gets overridden by CLI args):
     # python -m examples.var_rename --num_layers=3 --overwrite_existing_checkpoints
     config = VariableRenamingConfig(
-        num_layers=3,
+        num_layers=4,
         dim_model=128,
         num_heads=4,
         dropout_attn=0.0,
@@ -310,9 +325,11 @@ if __name__ == "__main__":
         num_chains=2,
         num_renames=40,
         learning_rate=1e-4,
-        weight_decay=1e-1,
+        weight_decay=1e-2,
         batch_size=512,
         num_epochs=1000,
+        warmup_steps=4000,
+        lr_start_factor=1e-3,  # results in 1e-7 starting lr
         eval_every_n_samples=1_000_000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",
