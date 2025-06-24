@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import LinearLR
 
 from iluvattnshun.nn import MultilayerTransformer
 from iluvattnshun.prompter import PromptConfig, Prompter
