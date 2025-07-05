@@ -85,8 +85,8 @@ class Attention(nn.Module):
         return_new_kv_cache: bool = False,
     ) -> Tuple[
         torch.Tensor,
-        Optional[torch.Tensor],
         Optional[Tuple[torch.Tensor, torch.Tensor]],
+        Optional[torch.Tensor],
     ]:
         """Forward pass through the attention layer.
         Args:
@@ -100,8 +100,8 @@ class Attention(nn.Module):
 
         Returns:
             output: Output tensor of shape (batch_size, seq_len, embed_dim)
-            attn_weights: Optional attention weights
             new_kv_cache: New KV cache tuple
+            attn_weights: Optional attention weights
         """
         # project queries, keys, and values
         # TODO: eventually allow for different projections for q, k, v
@@ -155,9 +155,9 @@ class Attention(nn.Module):
         output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
         output = self.out_proj(output)
 
-        returned_attn_weights = attn_weights if return_attn_weights else None
         returned_new_kv_cache = (k, v) if return_new_kv_cache else None
-        return output, returned_attn_weights, returned_new_kv_cache
+        returned_attn_weights = attn_weights if return_attn_weights else None
+        return output, returned_new_kv_cache, returned_attn_weights
 
 
 class TransformerLayer(nn.Module):
@@ -178,9 +178,9 @@ class TransformerLayer(nn.Module):
         self,
         x: torch.Tensor,
         kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
-        return_attn_weights: bool = False,
         return_new_kv_cache: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, tuple[torch.Tensor, torch.Tensor] | None]:
+        return_attn_weights: bool = False,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None, torch.Tensor | None]:
         """Forward pass through the transformer layer.
 
         Args:
@@ -188,13 +188,13 @@ class TransformerLayer(nn.Module):
             kv_cache: Optional tuple of (key, value) tensors from previous forward pass
 
         Returns:
-            Tuple of (output, new_kv_cache)
+            Tuple of (output, new_kv_cache, attn_weights)
         """
         x_norm = self.norm1(x)  # Pre-LN Xiong et al., 2020 (https://arxiv.org/abs/2002.04745v1)
 
         if kv_cache is not None:
             k, v = kv_cache
-            attn_out, attn_weights, new_kv_cache = self.attention(
+            attn_out, new_kv_cache, attn_weights = self.attention(
                 x_norm,
                 key=k,
                 value=v,
@@ -203,7 +203,7 @@ class TransformerLayer(nn.Module):
                 return_new_kv_cache=return_new_kv_cache,
             )
         else:
-            attn_out, attn_weights, new_kv_cache = self.attention(
+            attn_out, new_kv_cache, attn_weights = self.attention(
                 x_norm,
                 is_causal=True,
                 return_attn_weights=return_attn_weights,
@@ -214,7 +214,7 @@ class TransformerLayer(nn.Module):
         mlp_out = self.mlp(self.norm2(x))
         x = x + self.dropout_mlp(mlp_out)
 
-        return x, attn_weights, new_kv_cache
+        return x, new_kv_cache, attn_weights
 
 
 class MultilayerTransformer(nn.Module):
@@ -251,44 +251,51 @@ class MultilayerTransformer(nn.Module):
         self,
         x: torch.Tensor,
         kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
-        return_attn_weights: bool = False,
         return_new_kv_cache: bool = False,
+        return_attn_weights: bool = False,
+        return_xs: bool = False,
     ) -> tuple[
         torch.Tensor,
-        list[torch.Tensor] | None,
         list[tuple[torch.Tensor, torch.Tensor]] | None,
+        list[torch.Tensor] | None,
+        list[torch.Tensor] | None,
     ]:
         """Forward pass through the transformer.
 
         Args:
             x: Input tensor of shape (batch_size, seq_len)
             kv_cache: Optional list of (key, value) tuples for each layer
-            return_attn_weights: Whether to return attention weights
             return_new_kv_cache: Whether to return new KV cache
+            return_attn_weights: Whether to return attention weights
+            return_xs: Whether to return intermediate x, starting at token emb
 
         Returns:
-            Tuple of (output logits, attention weights, new kv_cache)
+            Tuple of (output logits, new kv_cache, attention weights)
         """
         x = self.token_embedding(x)  # (batch_size, seq_len, d_model)
         x = self.dropout_emb(x)
         new_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = [] if return_new_kv_cache else None
         attn_weights: list[torch.Tensor] | None = [] if return_attn_weights else None
+        xs: list[torch.Tensor] | None = [x.clone()] if return_xs else None
+
         for i, layer in enumerate(self.layers):
             layer_kv_cache = kv_cache[i] if kv_cache is not None else None
-            x, layer_attn_weights, layer_kv_cache = layer(
+            x, layer_kv_cache, layer_attn_weights = layer(
                 x,
                 layer_kv_cache,
-                return_attn_weights=return_attn_weights,
                 return_new_kv_cache=return_new_kv_cache,
+                return_attn_weights=return_attn_weights,
             )
 
             if return_new_kv_cache and new_kv_cache is not None and layer_kv_cache is not None:
                 new_kv_cache.append(layer_kv_cache)
             if return_attn_weights and attn_weights is not None and layer_attn_weights is not None:
                 attn_weights.append(layer_attn_weights)
+            if return_xs and xs is not None:
+                xs.append(x.clone())
 
         logits: torch.Tensor = self.output(x)
-        return logits, attn_weights, new_kv_cache
+        return logits, new_kv_cache, attn_weights, xs
 
     def sample_token(self, logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
         next_token_logits = logits / temperature
@@ -309,13 +316,13 @@ class MultilayerTransformer(nn.Module):
         """
 
         # run once on the whole prompt to prime the cache
-        _, _, kv_cache = self(prompt, return_attn_weights=False, return_new_kv_cache=True)
+        _, kv_cache, _ = self(prompt, return_attn_weights=False, return_new_kv_cache=True)
         generated = prompt  # start with the full prompt
 
         for _ in range(max_new_tokens):
             # keep feeding only the last token and append to the full sequence
             last_token = generated[:, -1:].clone()
-            logits, _, kv_cache = self(last_token, kv_cache, return_attn_weights=False, return_new_kv_cache=True)
+            logits, kv_cache, _ = self(last_token, kv_cache, return_attn_weights=False, return_new_kv_cache=True)
             next_token = self.sample_token(logits[:, -1, :], temperature)
             generated = torch.cat([generated, next_token], dim=1)
 

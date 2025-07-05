@@ -232,7 +232,7 @@ class VariableEvalTrainer(Trainer[VariableEvalConfig]):
         y = batch["answer_tokens"]  # (batch, seq)
         mask = (y != MASK_ID).long()  # (batch, seq)
 
-        logits, _, _ = model(x)  # (batch, seq, vocab_size)
+        logits, _, _, _ = model(x)  # (batch, seq, vocab_size)
         vocab_size = logits.shape[-1]
 
         # flatten for masked loss computation

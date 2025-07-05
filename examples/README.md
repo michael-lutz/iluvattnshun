@@ -106,7 +106,7 @@ prompt, answer, metadata = prompter.get_prompt(rng)
 
 with torch.no_grad():
 	x = torch.tensor(prompter.tokenize(prompt)).unsqueeze(0)
-    logits, attn_weights, _= model.forward(x, return_attn_weights=True)
+    logits, _, attn_weights, _ = model.forward(x, return_attn_weights=True)
 	pred = prompter.detokenize(logits[0].argmax(dim=-1).tolist())
 
 	print("prompt: ", prompt)

@@ -81,7 +81,7 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the cross-entropy loss over the final token logits."""
-        logits, _, _ = model(batch["prompt_tokens"])  # (batch_size, seq_len, vocab_size)
+        logits, _, _, _ = model(batch["prompt_tokens"])  # (batch_size, seq_len, vocab_size)
         target = batch["answer_tokens"]  # (batch_size, seq_len)
 
         # flatten for cross entropy

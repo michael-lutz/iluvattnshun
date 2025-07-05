@@ -235,7 +235,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         y = batch["answer_tokens"]  # (batch, seq)
         mask = (y != MASK_ID).long()  # (batch, seq)
 
-        logits, _, _ = model(x)  # (batch, seq, vocab_size)
+        logits, _, _, _ = model(x)  # (batch, seq, vocab_size)
         vocab_size = logits.shape[-1]
 
         # flatten for masked loss computation
@@ -319,14 +319,14 @@ if __name__ == "__main__":
         dropout_attn=0.0,
         dropout_mlp=0.1,
         dropout_emb=0.1,
-        rope_base=1000.0,
+        rope_base=2000.0,
         train_size=1_000_000,  # Ideally larger when we speed up generation
         test_size=10_000,
-        num_chains=2,
-        num_renames=40,
+        num_chains=4,
+        num_renames=150,
         learning_rate=1e-4,
         weight_decay=1e-2,
-        batch_size=512,
+        batch_size=128,
         num_epochs=1000,
         warmup_steps=4000,
         lr_start_factor=1e-3,  # results in 1e-7 starting lr
