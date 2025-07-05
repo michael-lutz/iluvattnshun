@@ -1,10 +1,9 @@
 """Utility functions."""
 
-import argparse
 import os
 import sys
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 import torch
 import torch.nn as nn

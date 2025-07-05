@@ -7,7 +7,7 @@ import numpy as np
 
 from iluvattnshun.prompter import PromptConfig, Prompter
 from iluvattnshun.trainer import TrainerConfig
-from iluvattnshun.types import TensorTree    
+from iluvattnshun.types import TensorTree
 
 
 @dataclass
