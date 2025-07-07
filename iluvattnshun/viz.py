@@ -71,7 +71,7 @@ def get_fig(
     subplot_titles = []
     for l in layers_to_plot:
         for h in heads_to_plot:
-            subplot_titles.append(f"L{l}H{h}")
+            subplot_titles.append(f"L{l+1}H{h+1}")
 
     fig = make_subplots(
         rows=len(layers_to_plot),
