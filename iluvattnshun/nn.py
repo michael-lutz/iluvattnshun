@@ -1,6 +1,6 @@
 """Includes basic standard neural network modules."""
 
-from typing import Optional, Tuple
+from typing import Callable, Tuple
 
 import torch
 import torch.nn as nn
@@ -14,7 +14,7 @@ class RotaryEmbedding(nn.Module):
     Implemented as module to avoid recomputing the inv_freq tensor.
     """
 
-    def __init__(self, d_model: int, base: int = 10000):
+    def __init__(self, d_model: int, base: float = 10000.0):
         super().__init__()
         # getting the inverse frequency θ_i in the RoPE paper
         inv_freq = base ** (-torch.arange(0, d_model, 2).float() / d_model)  # (d_model // 2,)
@@ -74,19 +74,27 @@ class Attention(nn.Module):
 
         self.scale = self.head_dim**-0.5
 
+        # Optional override functions for patching
+        self.qkv_override: (
+            Callable[[torch.Tensor, torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] | None
+        ) = None  # override q, k, v (batch, heads, seq, head_dim) before attn
+        self.attn_weights_override: Callable[[torch.Tensor], torch.Tensor] | None = (
+            None  # override attn map (batch, heads, seq, seq) pos softmax
+        )
+
     def forward(
         self,
         x: torch.Tensor,
         key: torch.Tensor | None = None,
         value: torch.Tensor | None = None,
-        key_padding_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False,
         return_attn_weights: bool = False,
         return_new_kv_cache: bool = False,
     ) -> Tuple[
         torch.Tensor,
-        Optional[Tuple[torch.Tensor, torch.Tensor]],
-        Optional[torch.Tensor],
+        Tuple[torch.Tensor, torch.Tensor] | None,
+        torch.Tensor | None,
     ]:
         """Forward pass through the attention layer.
         Args:
@@ -136,6 +144,10 @@ class Attention(nn.Module):
             q = self.rotary_embedding(q)
             k = self.rotary_embedding(k)
 
+        # apply QKV override if provided
+        if self.qkv_override is not None:
+            q, k, v = self.qkv_override(q, k, v)
+
         # compute attention scores
         assert x.device == k.device == v.device, "x, k, v must be on the same device"
         attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
@@ -151,6 +163,11 @@ class Attention(nn.Module):
 
         # apply softmax and compute output
         attn_weights = F.softmax(attn, dim=-1)
+
+        # apply attention weights override if provided
+        if self.attn_weights_override is not None:
+            attn_weights = self.attn_weights_override(attn_weights)
+
         output = torch.matmul(attn_weights, v)
         output = output.transpose(1, 2).contiguous().view(batch_size, -1, self.embed_dim)
         output = self.out_proj(output)

@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 def get_fig(
     attn_weights: list[np.ndarray],
     token_labels: list[str],
-    plot_size: tuple[int, int] = (1000, 1000),
+    base_height: int = 1000,
     font_size: int = 10,
     selected_layers: list[int] | None = None,
     selected_heads: list[int] | None = None,
@@ -137,7 +137,6 @@ def get_fig(
 
     # Calculate proportional dimensions based on token counts
     aspect_ratio = len(x_tokens_to_plot) / len(y_tokens_to_plot)
-    base_height = 1000  # Base height per subplot
     proportional_width = base_height * aspect_ratio
 
     fig.update_layout(
@@ -146,6 +145,7 @@ def get_fig(
         title_text="Attention Weights by Layer and Head",
         title_x=0.5,
         showlegend=False,
+        margin=dict(l=20, r=20, t=50, b=20),
     )
 
     return fig
