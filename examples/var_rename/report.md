@@ -1,4 +1,4 @@
-# Transformer Depth Unlocks $O(2^n)$ Effective Context Size with Divide and Conquer
+# Transformer Depth Unlocks $Ω(2^n)$ Effective Context Size with Divide and Conquer
 When discussing bottlenecks in transformer context size, we typically focus on position embeddings, the quadratic complexity of attention, and memory constraints. But there's a subtler, equally important limitation hidden in plain sight: the depth of recursive reasoning.
 
 Let's start with a fun brain teaser. In the codebase below, a segfault occurs downstream of function `f1035()`. Which function caused the bug?
@@ -44,7 +44,7 @@ I generated a variable evaluation dataset with an updated objective, trained mod
 
 ### Task Design
 I made some changes to the original variable binding task to simplify learning and improve interpretability:
-- The task requires the model to evaluate `b>a` instead of `a=b` to improve interpretability of the attention maps, as it allows variable `b` to directly attend to `a` during evaluation.
+- The task requires the model to evaluate `a>b` instead of `b=a` to improve interpretability of the attention maps, as it allows variable `b` to directly attend to `a` during evaluation. In this sense, `a` is the assigner and `b` is the assignee.
 - Each example consists of variable renaming chains like `1>a;2>b;a>c;b>d;d>e;`, where the model must predict the original numeric value at each variable token, improving sample efficiency.
 - Variables (sampled from a-z) may be reused by another chain once they are reassigned.
 - Accuracy is tracked and reported with respect to dependency depth (0-hops, 1-hop, 2-hops, etc.)
@@ -61,11 +61,10 @@ Above, I included an example prompt, the correct answers, example predictions, a
 [VariableRenamingPrompter](var_rename.py#VariableRenamingPrompter)
 
 ### Model Architecture
-I use a pre-LayerNorm transformer with RoPE positional embeddings, testing configurations from 2-5 layers and 1-2 heads. The vocabulary size is 39 tokens (digits 0-9, letters a-z, symbols `>`, `;`, `.`).
-
+I use a pre-LayerNorm transformer with RoPE positional embeddings, testing configurations from 2-5 layers and 1-2 heads. The vocabulary size is 39 tokens (digits 0-9, letters a-z, symbols `>`, `;`, `.`). I found through early experiments that using RoPE, as opposed to absolute positional embeddings, is crucial for the model to generalize across different chain lengths.
 
 ### Experimental Parameters
-- Training: 1M examples with 150 renames each, 10K test examples
+- Training: 1M examples with 150 renames sampled from 4 chains, 10K test examples. *I should mention that increasing the number of chains to 4 (from 2) resulted in much better generalization for reasons that will become clear later.*
 - Batch size: 128, Learning rate: 1e-4 with 4K warmup steps
 - Hyperparameter sweep: 8 configurations testing layer depth (2,3,4,5) × attention heads (1,2)
 
@@ -98,9 +97,15 @@ Generally, the one head experiments converged much slower or, in the case of the
 ## The Divide and Conquer Mechanism
 So how does this tiny transformer achieve exponentially improving performance with respect to the number of layers? The key is that the model learns a divide and conquer copy circuit, where *every* token resolves an independent dependency in parallel, as opposed to only the query token at the end.
 
-Before diving into attention maps, I'd like to summarize the patterns I found:
-- First layer handles `b` to `b` in `a>b;...;b>c` as well as captures whether a variable occurs after a `>` or `;`
-- Second layer relaxes 
+Before diving into attention maps on a sample input, I'll first provide an oversimplified summary of the mechanism. Consider the simple 1-chain example: `1>a;a>b;b>c;c>d;d>e;e>f;f>g;g>h;h...`. The first attention layer 1\) distinguishes between the assigner and assignee tokens and 2\) attends assigner tokens to their preceding assignee tokens (e.g. the second `b` attends to the first `b`). The second attention layer uses positional embeddings to attend assigner tokens to their parent assigner tokens (e.g. the second `b` attends to the second `a`). The ensuing layers continue this pattern with assigner tokens and resolves assignee tokens by attending them to their assigners. We can conceptualize each token as having a key (e.g. `b`) and a layer-dependent value (e.g. `a` at the output of layer 2). In the figure below, $f$ generically symbolizes attention & the ensuing MLP transformation. Some tokens are omitted in later attention operations for clarity.
+
+![Copy Mechanism](copy_mechanism.jpg)
+
+If we continue this pattern, we can quickly observe how the the number of hops a token can ultimately resolve is exponential in the number of layers. For example, `h` can theoretically resolve 8 hops back to `1` in a 5 attention-based model.
+
+![Divide and Conquer Mechanism](div_and_conquer.jpg)
+
+While this provides a simple primer, the exact mechanism by which divide and conquer copying occurs is slightly more nuanced. For instance, the model learns certain tricks to greatly exceed the implied $2^{n-2}$ limit from above. Let's dive into the attention maps to gain a more complete picture.
 
 ### Attention Maps
 In this section, I analyze the attention maps of a 5 layer, 2 head transformer after 284 epochs on the prompt generated with seed `42`, which it predicts with 100% accuracy. For context, the maximum chain depth in this prompt is 43 at `n>h;`.
@@ -116,13 +121,13 @@ Right:
 ```
 
 #### Layer 1 Attention Maps
-As per standard, tokens along the y axis attend to tokens along the x axis. Black squares are where the normalized attention probability gets too small to matter. You may explore both heads' attention maps by scrolling left and right. You may also select a region you'd like to magnify and double click to return to the original zoom.
+As per standard, tokens along the y axis attend to tokens along the x axis. Black squares are where the normalized attention probability gets too small to matter. You may explore the attention maps of both heads by scrolling left and right. You may also select a region you'd like to magnify and double click to return to the original zoom.
 
 [Layer 1 Attention Maps](l1_attn_map.html)
 
-Let's start by examining how both maps treat the **first variable in an assignment operator** (e.g. `x` in `x>y;`). Specifically zoom to the top ~20 characters of the first map and observe the path where `0>c;...;c>u`. If you view the row of the second `c`, you can observe that it attends primarily to the first `c` that appears before it. Something similar happens in the second head for `c`, but if you zoom out, it appears specialize at different relative distances. Together, they discover most self-to-self relationships, passing the embedding of the former to the latter, thereby giving the second instance the relative *position* of the first (this will come handy later!). The fact that *both* heads learned slightly different lookback ranges is somewhat of a mystery to me, but it's likely a function of the RoPE base not being fully calibrated and rotational finessing to avoid the case where a letter attends to a stale instance of same letter in a different chain.
+Let's start by examining how both maps treat the first variable in an assignment operator (e.g. `x` in `x>y;`). Specifically, zoom to the top ~20 characters of the first head's map and observe the path where `0>c;...;c>u`. If you view the row of the second `c`, you can observe that it attends primarily to the first `c` that appears before it. Something similar happens in the second head for `c`, but if you zoom out, it appears specialize at different relative distances. Together, they discover most self-to-self relationships, passing the embedding of the former to the latter, thereby giving the second instance the relative *position* of the first (this will come handy later!). The fact that *both* heads learned slightly different lookback ranges is somewhat of a mystery to me, but it's likely a function of the RoPE base not being fully calibrated and rotational finessing to avoid the case where a letter attends to a stale instance of same letter in a different chain.
 
-Now let's see how the **second variable in an assignment operator** (e.g. `y` in `x>y;`) gets treated. I initially thought `y` should always attend to `x` using relative positions, but `y` has no way of telling whether the character two before it belongs to the `x>y` assignment or `x;y` sequence, the latter of which might assign `y` to an `x` of a different chain. As such, both heads seem to encode positional information: head 1 makes `y` attend to preceding `;` and `>` instances, and head 2 makes `y` attend strongly to preceding `>` instances at 12, 20, . This lets future layers know that `y` is the one getting assigned and not the one doing the assigning.
+Now let's see how the second variable in an assignment operator (e.g. `y` in `x>y;`) gets treated. I initially thought `y` should always attend to `x` using relative positions, but `y` has no way of telling whether the character two before it belongs to the `x>y` assignment or `x;y` sequence, the latter of which might assign `y` to an `x` of a different chain. As such, both heads seem to encode positional information: head 1 makes `y` attend to preceding `;` and `>` instances, and head 2 makes `y` attend strongly to preceding `>` instances with consistent relative distances. This lets future layers know that `y` is the one getting assigned and not the one doing the assigning.
 
 While not too important for this analysis, another interesting pattern is that `>` and `;` tokens throughout the sequence tend to attend to all numerical tokens and other `>` and `;` tokens to some degree, creating the striking lattice pattern. I hypothesize that this serves (or once served) as a fallback mechanism for when the model needs to make an educated guess. The numerical tokens themselves aren't that intresting to analyze, as the residual pathway will ensure their identity is always present.
 
@@ -132,9 +137,34 @@ While not too important for this analysis, another interesting pattern is that `
 
 Layer 2 is interesting because the second head appears much more information dense than the first. We can confirm that the second head is much more important than the first by patching the heads and examining performance regressions (see [here](#head-patching)).
 
-We can start by observing how all tokens in `2>l`, `0>c`, `1>f`, and `3>p` attend directly to the relevant number of the operation. Afterwards, we see an interesting pattern emerge where the assigner attends directly to its parent. Take the example `c` from last time. It likely used the relative position of the first `c` during its assignemnt to determine that it should attend directly to `0` in the second layer. However the `>` and `u` tokens have no way of knowing to attend to `0` and thus attend to the second `c`, gaining its information from the first attention layer. If you zoom out you'll see this exact attention pattern everywhere.
+We can start by observing how all tokens in `2>l`, `0>c`, `1>f`, and `3>p` attend directly to `2`, `0`, `1`, and `3` respectively. Continuing across the prompt, we see an interesting pattern emerge where the assigner attends directly to its parent. Let's continue analyzing the second instance of the `c` variable (from `c>u;`). It likely uses the relative distance to the first `c` from the previous layer to determine that it should attend directly to `0`. The ensuing `>` and `u` tokens from `c>u;` have no way of knowing to attend to `0` from the previous layer and thus attend to the second `c`. If you zoom out you'll see this exact attention pattern everywhere.
 
-However, there are some fascinating exceptions. For instance, see `c>u;u>s;s>n`. In head 2, all variables in this sequence attend to the second `c`, with some of which assigning slight weight to `3`, which is part of another chain. Moreover, head 1 appears to break from its regular structure and "back up" the first instances of `n` and `s` by attending more safely to their direct assigner (`u` and `s` in this case). Someohow, maybe exploiting a sparse signal detected from the previous layer, the model knows to *guess* ahead... and it turns out to be right!
+However, there are some fascinating exceptions. For instance, examine the sequence of back-to-back reassignments `c>u;u>s;s>n`. In head 2, all variables in this sequence skip the line and directly attend to the second `c`. If you zoom out, you'll see occaisonal long vertical lines of high attention (some 4 hops in length!) in which back-to-back reassignments attend directly to the first of the sequence. I hypothesize that the model learns to exploit the fact that back-to-back assignments imply the first of which belongs to the same chain as the last. Back-to-back hops are likely transformed differently in the first layer, allowing the model to use positional embeddings to can selectively attend to the first of the sequence. This trick allows the model to resolve chains of lengths much greater than the theoretical expectation.
+
+#### Layer 3 Attention Maps
+
+[Layer 3 Attention Maps](l3_attn_map.html)
+
+Let's start in head 2 and inspect the direct numerical assignments (e.g. `1>f`). Recall that in layer 2, the `1`, `>`, and `f` tokens all attend to `2`. Now, these tokens attend to themselves and other members of the operation. In other words, they have been fully resolved in layer 2 and are simply preserving the information they previously stored.
+
+Now let's look at the `c>u;` operation. In layer 2, we saw that the first `c` attended directly to 0 whereas the following `>` and `u` tokens only attended to `c`. In lyaer 3, `c` attends to itself because it has already resolved into a number, while `>` and `u` now attend to `0`. From here on out, we can observe a similar pattern across layers: the assigner resolves itself by attending to its parent (typically the assigner) and taking on the parent's *current* value. In the following layer, the assignee resolves itself to the parent's value by attending to the parent assigner or the parent assignee. When a variable has resolved into a number, it attends primarily to itself.
+
+An interesting aspect of layer 3 is that both heads appear to information dense. However, it is worth noting that the second layer turns out to be slightly more important than the first on this prompt, as patching the second head results in an accuracy of 34% whereas patching the first head results in an accuracy of 59%.
+
+#### Layer 4 Attention Maps
+
+[Layer 4 Attention Maps](l4_attn_map.html)
+
+Layer 4 continues the pattern of the previous layer, where the assigner attends to its parent and takes on the parent's *current* value. The assignee resolves itself to the parent's value by attending to the parent assigner or the parent assignee.
+
+#### Layer 5 Attention Maps
+
+[Layer 5 Attention Maps](l5_attn_map.html)
+
+For the most part, elements in layer 5 attend to themselves or tokens within the same operation. However, as the recursive depth of the variable chains increase, some tokens form long-range connections to other tokens in the same assignment sequence. Because displaying the entire 600x600 attention map is too memory-intensive for the browser, I have included the final 400-600 tokens below.
+
+[Layer 5 Attention Maps Last 200 Tokens](l5_attn_map_last_200.html)
+
 
 ## LLMs Don't Learn this Behavior
 Try on existing one
@@ -147,9 +177,6 @@ Try on existing one
 ## Acknowledgements
 
 ## Appendix
-### Pro Tips that (Probably) Helped (maybe move up?)
-- RoPE (big time, and setting the base slightly lower)
-- The formulation enforces training on various lengths
-- Ensuring number of chains is large enough
+
 
 ### Head Patching
