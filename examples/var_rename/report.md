@@ -1,4 +1,4 @@
-# Transformer Depth Unlocks $Ω(2^n)$ Effective Context Size with Divide and Conquer
+# Transformer Depth Unlocks $2^n$ Effective Context Size with Divide and Conquer
 When discussing bottlenecks in transformer context size, we typically focus on position embeddings, the quadratic complexity of attention, and memory constraints. But there's a subtler, equally important limitation hidden in plain sight: the depth of recursive reasoning.
 
 Let's start with a fun brain teaser. In the codebase below, a segfault occurs downstream of function `f1035()`. Which function caused the bug?
@@ -30,12 +30,10 @@ e=b
 
 Patching the residual stream, they found that information flows from one token to another with each layer, iteratively resolving the dependencies one layer at a time. In the first few layers, the token `b` might store "b is 2" in its activation, and in the next layer, the token `e` might attend to `b` and store "e is 2" in its activation, and so on. Another cool paper by [Prakash et al.](https://arxiv.org/abs/2505.14685) describes a "lookback mechanism" in which information flows across dependencies from earlier to later layers.
 
-(include a diagram of hypothesized information flow)
-
 This all had me wondering: what is the relationship between the number of layers and the *maximum* number of dependencies a token can encode? At first glance the relationship seems linear, as each layer allows the query token to reach a subsequent dependency. As complexity of the prompt increases, the effective context size shrinks linearly. On complex codebases or long novels, this result would be especially concerning for modern LLMs, which only have layer depths on the order of 60-120 (insert your favorite reddit leak here).
 
 But what if the transformer learns to *divide and conquer*? If each token resolves its own dependencies in parallel, then it might be possible to achieve exponential effective context size with respect to layer depth. In this post, I show that this is indeed the case:
-1. With the right formulation, transformers can resolve $Ω(2^n)$ dependencies for $n$ stacked attention layers.
+1. With the right formulation, transformers can resolve on the order of $2^n$ dependencies for $n$ stacked attention layers.
 2. Modern LLMs do not exhibit this exponential behavior and instead rely on tool use or chain of thought reasoning to resolve dependencies sequentially.
 
 ## Variable Evaluation Experiment
@@ -58,7 +56,7 @@ Correct:   ✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.✔.�
 
 Above, I included an example prompt, the correct answers, example predictions, and whether those predictions were correct. I don't want to bore you with the details, but feel free to read through the prompt generation code below:
 
-[VariableRenamingPrompter](var_rename.py#VariableRenamingPrompter)
+[VariableRenamingPrompter](train.py#VariableRenamingPrompter)
 
 ### Model Architecture
 I use a pre-LayerNorm transformer with RoPE positional embeddings, testing configurations from 2-5 layers and 1-2 heads. The vocabulary size is 39 tokens (digits 0-9, letters a-z, symbols `>`, `;`, `.`). I found through early experiments that using RoPE, as opposed to absolute positional embeddings, is crucial for the model to generalize across different chain lengths.
@@ -68,7 +66,7 @@ I use a pre-LayerNorm transformer with RoPE positional embeddings, testing confi
 - Batch size: 128, Learning rate: 1e-4 with 4K warmup steps
 - Hyperparameter sweep: 8 configurations testing layer depth (2,3,4,5) × attention heads (1,2)
 
-[Default Training Parameters](var_rename.py#L1-4)
+[Default Training Parameters](train.py#L315-L339)
 
 ### Experiment Results
 
@@ -88,22 +86,22 @@ Below is a table summarizing overall accuracy with respect to the number of laye
 
 However, what is more interesting is how model performance per depth changes with respect to the number of layers. The results are shown below, where the x-axis is the number of hops (i.e., how many renames away from the original variable) and the y-axis is accuracy. This data was similarly taken after training for 8 days and 2 hours.
 
-![Model Performance per Depth](accuracy_per_depth.png)
+![Model Performance per Depth](assets/accuracy_per_depth.png)
 
 For the data with two heads, we can clearly observe an exponential relationship between the number of layers and the performance per chain depth. The two layer model experiences regresses from perfect accuracy at 2 hops to baseline at 8 hops, the three layer model drops in performance from 4 to 13 hops, the four layer model declines from perhaps 10 to 29 hops, and the five layer model begins to decline perhaps in the low 20s.
 
 Generally, the one head experiments converged much slower or, in the case of the five layer 1 head experiment, have not yet converged. Moreover, it is worth noting that the three layers 1 head regressed heavily at 684 steps, likely due to instability caused. I hypothesize why this is the case [here](#head-patching).
 
-## The Divide and Conquer Mechanism
+## Divide and Conquer Circuit
 So how does this tiny transformer achieve exponentially improving performance with respect to the number of layers? The key is that the model learns a divide and conquer copy circuit, where *every* token resolves an independent dependency in parallel, as opposed to only the query token at the end.
 
 Before diving into attention maps on a sample input, I'll first provide an oversimplified summary of the mechanism. Consider the simple 1-chain example: `1>a;a>b;b>c;c>d;d>e;e>f;f>g;g>h;h...`. The first attention layer 1\) distinguishes between the assigner and assignee tokens and 2\) attends assigner tokens to their preceding assignee tokens (e.g. the second `b` attends to the first `b`). The second attention layer uses positional embeddings to attend assigner tokens to their parent assigner tokens (e.g. the second `b` attends to the second `a`). The ensuing layers continue this pattern with assigner tokens and resolves assignee tokens by attending them to their assigners. We can conceptualize each token as having a key (e.g. `b`) and a layer-dependent value (e.g. `a` at the output of layer 2). In the figure below, $f$ generically symbolizes attention & the ensuing MLP transformation. Some tokens are omitted in later attention operations for clarity.
 
-![Copy Mechanism](copy_mechanism.jpg)
+![Copy Mechanism](assets/copy_mechanism.jpg)
 
 If we continue this pattern, we can quickly observe how the the number of hops a token can ultimately resolve is exponential in the number of layers. For example, `h` can theoretically resolve 8 hops back to `1` in a 5 attention-based model.
 
-![Divide and Conquer Mechanism](div_and_conquer.jpg)
+![Divide and Conquer Mechanism](assets/div_and_conquer.jpg)
 
 While this provides a simple primer, the exact mechanism by which divide and conquer copying occurs is slightly more nuanced. For instance, the model learns certain tricks to greatly exceed the implied $2^{n-2}$ limit from above. Let's dive into the attention maps to gain a more complete picture.
 
@@ -121,9 +119,9 @@ Right:
 ```
 
 #### Layer 1 Attention Maps
-As per standard, tokens along the y axis attend to tokens along the x axis. Black squares are where the normalized attention probability gets too small to matter. You may explore the attention maps of both heads by scrolling left and right. You may also select a region you'd like to magnify and double click to return to the original zoom. For memory reasons, I have only included the first 200 tokens of each head.
+As per standard, tokens along the y axis attend to tokens along the x axis. Black squares are where the normalized attention probability gets too small to matter. You may explore the attention maps of both heads by scrolling left and right. You may also select a region you'd like to magnify and double click to return to the original zoom. For memory reasons, I have only included the first 150 tokens of each head.
 
-[Layer 1 Attention Maps](l1_attn_map.html)
+[Layer 1 Attention Maps](assets/l1_attn_map.html)
 
 Let's start by examining how both maps treat the first variable in an assignment operator (e.g. `x` in `x>y;`). Specifically, zoom to the top ~20 characters of the first head's map and observe the path where `0>c;...;c>u`. If you view the row of the second `c`, you can observe that it attends primarily to the first `c` that appears before it. Something similar happens in the second head for `c`, but if you zoom out, it appears specialize at different relative distances. Together, they discover most self-to-self relationships, passing the embedding of the former to the latter, thereby giving the second instance the relative *position* of the first (this will come handy later!). The fact that *both* heads learned slightly different lookback ranges is somewhat of a mystery to me, but it's likely a function of the RoPE base not being fully calibrated and rotational finessing to avoid the case where a letter attends to a stale instance of same letter in a different chain.
 
@@ -133,7 +131,7 @@ While not too important for this analysis, another interesting pattern is that `
 
 #### Layer 2 Attention Maps
 
-[Layer 2 Attention Maps](l2_attn_map.html)
+[Layer 2 Attention Maps](assets/l2_attn_map.html)
 
 Layer 2 is interesting because the second head appears much more information dense than the first. We can confirm that the second head is much more important than the first by patching the heads and examining performance regressions (see [here](#head-patching)).
 
@@ -143,7 +141,7 @@ However, there are some fascinating exceptions. For instance, examine the sequen
 
 #### Layer 3 Attention Maps
 
-[Layer 3 Attention Maps](l3_attn_map.html)
+[Layer 3 Attention Maps](assets/l3_attn_map.html)
 
 Let's start in head 2 and inspect the direct numerical assignments (e.g. `1>f`). Recall that in layer 2, the `1`, `>`, and `f` tokens all attend to `2`. Now, these tokens attend to themselves and other members of the operation. In other words, they have been fully resolved in layer 2 and are simply preserving the information they previously stored.
 
@@ -153,20 +151,20 @@ An interesting aspect of layer 3 is that both heads appear to information dense.
 
 #### Layer 4 Attention Maps
 
-[Layer 4 Attention Maps](l4_attn_map.html)
+[Layer 4 Attention Maps](assets/l4_attn_map.html)
 
 Layer 4 continues the pattern of the previous layer, where the assigner attends to its parent and takes on the parent's *current* value. The assignee resolves itself to the parent's value by attending to the parent assigner or the parent assignee.
 
 #### Layer 5 Attention Maps
 
-[Layer 5 Attention Maps](l5_attn_map.html)
+[Layer 5 Attention Maps](assets/l5_attn_map.html)
 
-For the most part, elements in layer 5 attend to themselves or tokens within the same operation. However, as the recursive depth of the variable chains increase, some tokens form long-range connections to other tokens in the same assignment sequence. Because displaying the entire 600x600 attention map is too memory-intensive for the browser, I have included the final 400-600 tokens below.
+For the most part, elements in layer 5 attend to themselves or tokens within the same operation. However, as the recursive depth of the variable chains increase, some tokens form long-range connections to other tokens in the same assignment sequence. Because displaying the entire 600x600 attention map is too memory-intensive for the browser, I have included the final 400-550 tokens below.
 
-[Layer 5 Attention Maps Last 200 Tokens](l5_attn_map_last_200.html)
+[Layer 5 Attention Maps Last 200 Tokens](assets/l5_attn_map_last_200.html)
 
 
-## LLMs use Chain of Thought as a Crutch
+## LLMs Cheat with CoT
 If a simple transformer can resolve an exponential number of dependencies with layer depth, LLMs with 100s of layers should be able to resolve an effectively infinite number of dependencies, right?
 
 Try pasting the prompt from [above](#attention-maps) into a chatbot like Claude or ChatGPT, and it will likely try to solve the problem by evoking a code intepreter or by manually resolving one token at a time by chain of thought reasoning. After all, chain of thought reasoning allows the model to resolve token relationships by caching the most recent evaluation and performing a shallow lookback to its parent. If you ask a model to directly evaluate a high-depth variable chain, it will almost surely fail at high depths.
@@ -270,10 +268,10 @@ def f13086():
 
 The answer is `f18424` after 9 hops, but GPT-4o insisted accross multiple calls that the answer was `f14698`.
 
-Despite having the theoretical ability to understand exponentially many dependencies in prompt token activations, modern LLMs do not seem to explot this capability. My hypothesis is that most model pretraining data actually dos not require the model to truly understand a large number of dependencies per token. Instead, a model likely reaches a local optimum of the next-token objective by learning to perform shallow lookbacks. During post-training, a model learns to perform chain of thought reasoning to resolve large numbers of dependencies, thereby skirting the need to actually understand a large number of dependencies while processing the context. While this may saturate post-training objectives, it notably prevents a model from truly forming long-range connections—a capability that *should* be learnable.
+Despite having the theoretical ability to understand exponentially many dependencies in prompt token activations, modern LLMs do not seem to explot this capability. My hypothesis is that most model pretraining data actually dos not require the model to truly understand a large number of dependencies per token. Instead, a model likely reaches a local optimum of the next-token objective by learning to perform shallow lookbacks. During post-training, a model learns to perform chain of thought reasoning to resolve large numbers of dependencies, skirting the need to actually understand a large number of dependencies while processing the context. While this may saturate post-training objectives, it notably prevents a model from truly forming long-range connections—a capability that *should* be learnable.
 
-## Why this Matters (and What's Next)
-If we are to ever reach model intelligence that greatly surpasses human ability, understanding complex information dependencies seems natural and necessary. While chain of thought reasoning allows a model to resolve dependencies in token-space, the fact remains that *you don't know what you don't know*, and it is easy to miss important connections that are not obvious within a few hops. Moreover, problems that require searching through a dependency *graph* (e.g. functions may call multiple functions) is simply intractable in token space.
+## Conclusion
+If we are to ever reach model intelligence that greatly surpasses human ability, understanding complex information dependencies seems natural and necessary. While chain of thought reasoning allows a model to resolve dependencies in token-space, the fact remains that *you don't know what you don't know*, and it is easy to miss important connections that are not obvious within a few hops. Moreover, problems that require searching through a dependency *graph* (e.g. functions may call multiple functions) is simply intractable via chain of thought.
 
 I don't have access to a large distributed learning setup, but if I did, I'd start by adding a pretraining objective that requires a model to resolve a large number of dependencies per token. To avoid disrupting the natural abstraction of information, it might be worth warm-starting this circuit by freezing most heads and weight-sharing a head from the third layer and onwards to enforce a recursive divide and conquer mechanism. Another subtle detail is that the question must be provided before the context, otherwise the model would be unable to resolve the problem in parallel.
 

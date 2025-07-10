@@ -4,7 +4,7 @@
 
 To run a simple training job:
 ```bash
-python -m examples.var_rename.var_rename
+python -m examples.var_rename.train
 ```
 
 ### Grid Search with Tmux
@@ -66,7 +66,7 @@ done
 for ((i = 0; i < n; i++)); do
     gpu_index=$((i % ${#GPUs[@]}))
     gpu=${GPUs[$gpu_index]}
-    cmd="CUDA_VISIBLE_DEVICES=$gpu python -m examples.var_rename.var_rename ${sweeps[$i]} --run_name=sweep_${i}"
+    cmd="CUDA_VISIBLE_DEVICES=$gpu python -m examples.var_rename.train ${sweeps[$i]} --run_name=sweep_${i}"
     tmux send-keys -t $SESSION_NAME:0.$i "$cmd" C-m
 done
 
