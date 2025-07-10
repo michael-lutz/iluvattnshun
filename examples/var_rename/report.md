@@ -68,7 +68,7 @@ I use a pre-LayerNorm transformer with RoPE positional embeddings, testing confi
 - Batch size: 128, Learning rate: 1e-4 with 4K warmup steps
 - Hyperparameter sweep: 8 configurations testing layer depth (2,3,4,5) × attention heads (1,2)
 
-[Default Training Parameters](var_rename.py#L312-342)
+[Default Training Parameters](var_rename.py#L1-4)
 
 ### Experiment Results
 
@@ -121,7 +121,7 @@ Right:
 ```
 
 #### Layer 1 Attention Maps
-As per standard, tokens along the y axis attend to tokens along the x axis. Black squares are where the normalized attention probability gets too small to matter. You may explore the attention maps of both heads by scrolling left and right. You may also select a region you'd like to magnify and double click to return to the original zoom.
+As per standard, tokens along the y axis attend to tokens along the x axis. Black squares are where the normalized attention probability gets too small to matter. You may explore the attention maps of both heads by scrolling left and right. You may also select a region you'd like to magnify and double click to return to the original zoom. For memory reasons, I have only included the first 200 tokens of each head.
 
 [Layer 1 Attention Maps](l1_attn_map.html)
 
@@ -149,7 +149,7 @@ Let's start in head 2 and inspect the direct numerical assignments (e.g. `1>f`).
 
 Now let's look at the `c>u;` operation. In layer 2, we saw that the first `c` attended directly to 0 whereas the following `>` and `u` tokens only attended to `c`. In lyaer 3, `c` attends to itself because it has already resolved into a number, while `>` and `u` now attend to `0`. From here on out, we can observe a similar pattern across layers: the assigner resolves itself by attending to its parent (typically the assigner) and taking on the parent's *current* value. In the following layer, the assignee resolves itself to the parent's value by attending to the parent assigner or the parent assignee. When a variable has resolved into a number, it attends primarily to itself.
 
-An interesting aspect of layer 3 is that both heads appear to information dense. However, it is worth noting that the second layer turns out to be slightly more important than the first on this prompt, as patching the second head results in an accuracy of 34% whereas patching the first head results in an accuracy of 59%.
+An interesting aspect of layer 3 is that both heads appear to information dense. However, it is worth noting that the second layer turns out to be slightly more important than the first on this prompt, as patching the second head results in an accuracy of 34% whereas patching the first head results in an accuracy of 59% (see [here](#head-patching)).
 
 #### Layer 4 Attention Maps
 
@@ -166,17 +166,146 @@ For the most part, elements in layer 5 attend to themselves or tokens within the
 [Layer 5 Attention Maps Last 200 Tokens](l5_attn_map_last_200.html)
 
 
-## LLMs Don't Learn this Behavior
-Try on existing one
-- Attempts to use python or does it in chain of thought. Fails if you ask it to direclty do it without reasoning early on.
+## LLMs use Chain of Thought as a Crutch
+If a simple transformer can resolve an exponential number of dependencies with layer depth, LLMs with 100s of layers should be able to resolve an effectively infinite number of dependencies, right?
 
-- Existing research suggests models do this linearly...
+Try pasting the prompt from [above](#attention-maps) into a chatbot like Claude or ChatGPT, and it will likely try to solve the problem by evoking a code intepreter or by manually resolving one token at a time by chain of thought reasoning. After all, chain of thought reasoning allows the model to resolve token relationships by caching the most recent evaluation and performing a shallow lookback to its parent. If you ask a model to directly evaluate a high-depth variable chain, it will almost surely fail at high depths.
 
-## Why this Matters (and What's Next...)
+In fact, try plugging this very simple prompt into your favorite chatbot:
+```
+The a>b operator means b=a, or b resolves to a. Assume the operations are evaluated by an interpreter in this exact order.
+
+2>l;0>c;1>f;3>p;c>u;u>s;s>n;p>w;l>o;o>e;n>u;f>k;u>n;e>l;w>c;k>x;c>v;n>g;
+
+What number does g evaluate to? Give your answer first and then why.
+```
+When I tried this (as of July 10th, 2025), both Claude and GPT-4o cycled between 1 and 2, failing to provide the correct answer of 0.
+
+But sure... this type of prompt likely wasn't in the training data of either model, so let's try something that will appear more familiar despite resolving to the same variable evaluation task. It's important to note that the instruction must be provided before the context, otherwise the model would be unable to resolve the problem in parallel.
+
+```
+In the codebase below, a bug. I know f11164() gets called. Which function caused the bug? Provide your answer and then why.
+
+def f14698():
+    raise RuntimeError('Unknown error occurred')
+
+def f11164():
+    raise RuntimeError('Unknown error occurred')
+
+def f18424():
+    raise RuntimeError('Unknown error occurred')
+
+def f11437():
+    raise RuntimeError('Unknown error occurred')
+
+def f16675():
+    f18424()
+
+def f19706():
+    f11437()
+
+def f14318():
+    f19706()
+
+def f13588():
+    f11164()
+
+def f19781():
+    f16675()
+
+def f13578():
+    f13588()
+
+def f10571():
+    f14698()
+
+def f14037():
+    f19781()
+
+def f15394():
+    f14037()
+
+def f14642():
+    f10571()
+
+def f15294():
+    f14642()
+
+def f11955():
+    f14318()
+
+def f19783():
+    f13578()
+
+def f11098():
+    f15394()
+
+def f12421():
+    f11955()
+
+def f14363():
+    f11098()
+
+def f13261():
+    f12421()
+
+def f12227():
+    f15294()
+
+def f18920():
+    f13261()
+
+def f17094():
+    f18920()
+
+def f17819():
+    f19783()
+
+def f10747():
+    f14363()
+
+def f13086():
+    f10747()
+```
+
+The answer is `f18424` after 9 hops, but GPT-4o insisted accross multiple calls that the answer was `f14698`.
+
+Despite having the theoretical ability to understand exponentially many dependencies in prompt token activations, modern LLMs do not seem to explot this capability. My hypothesis is that most model pretraining data actually dos not require the model to truly understand a large number of dependencies per token. Instead, a model likely reaches a local optimum of the next-token objective by learning to perform shallow lookbacks. During post-training, a model learns to perform chain of thought reasoning to resolve large numbers of dependencies, thereby skirting the need to actually understand a large number of dependencies while processing the context. While this may saturate post-training objectives, it notably prevents a model from truly forming long-range connections—a capability that *should* be learnable.
+
+## Why this Matters (and What's Next)
+If we are to ever reach model intelligence that greatly surpasses human ability, understanding complex information dependencies seems natural and necessary. While chain of thought reasoning allows a model to resolve dependencies in token-space, the fact remains that *you don't know what you don't know*, and it is easy to miss important connections that are not obvious within a few hops. Moreover, problems that require searching through a dependency *graph* (e.g. functions may call multiple functions) is simply intractable in token space.
+
+I don't have access to a large distributed learning setup, but if I did, I'd start by adding a pretraining objective that requires a model to resolve a large number of dependencies per token. To avoid disrupting the natural abstraction of information, it might be worth warm-starting this circuit by freezing most heads and weight-sharing a head from the third layer and onwards to enforce a recursive divide and conquer mechanism. Another subtle detail is that the question must be provided before the context, otherwise the model would be unable to resolve the problem in parallel.
+
+An interesting follow-up direction is to explore the ability of small models to perform search through graph-like dependency relationships. Moreover, weight sharing the divide and conquer mechanism seems like a natural way to allow *infinite* dependency resolution.
+
 
 ## Acknowledgements
 
 ## Appendix
 
-
 ### Head Patching
+
+To understand the relative importance of each attention head, I performed head patching experiments where individual heads were replaced with their activations from a different prompt (seed 420) while keeping all other heads from the original prompt (seed 42). This technique reveals which heads are most critical for the model's performance on the variable evaluation task.
+
+The results show a clear pattern of head specialization across layers:
+
+| Layer | Head 0 | Head 1 | Most Important |
+|-------|--------|--------|----------------|
+| 1     | 0.2367 | 0.2467 | both           |
+| 2     | 0.5100 | 0.2033 | head 1         |
+| 3     | 0.5900 | 0.3400 | head 1         |
+| 4     | 0.3000 | 0.8767 | head 0         |
+| 5     | 0.8700 | 0.5100 | head 1         |
+
+Several interesting patterns emerge from this analysis:
+
+**Layer 1**: Both heads show similar importance (23.67% vs 24.67%), suggesting they work together to establish the initial self-attention patterns for variable lookups. This layer likely handles the basic token-to-token relationships that form the foundation for subsequent processing.
+
+**Layer 2**: Head 1 is significantly more important (51.00% vs 20.33%), indicating it plays a crucial role in establishing the positional relationships between assigners and assignees. This aligns with the attention map observations where head 1 showed more information-dense patterns.
+
+**Layer 3**: Head 1 remains dominant (59.00% vs 34.00%), continuing its role in resolving direct parent-child relationships in the variable chains. The continued importance of head 1 suggests it maintains responsibility for the core dependency resolution mechanism.
+
+**Layer 4**: Head 0 is dramatically more important (87.67% vs 30.00%), suggesting it takes over the primary role in propagating resolved values through the dependency chains. This represents a shift in computational responsibility as the model moves to higher-level reasoning.
+
+**Layer 5**: Head 1 is the most important (87.00% vs 51.00%), likely handling the final resolution of complex multi-hop dependencies. The return to head 1 suggests it specializes in the most sophisticated aspects of the divide-and-conquer mechanism.
