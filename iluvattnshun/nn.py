@@ -333,13 +333,13 @@ class MultilayerTransformer(nn.Module):
         """
 
         # run once on the whole prompt to prime the cache
-        _, kv_cache, _ = self(prompt, return_attn_weights=False, return_new_kv_cache=True)
+        _, kv_cache, _, _ = self(prompt, return_attn_weights=False, return_new_kv_cache=True)
         generated = prompt  # start with the full prompt
 
         for _ in range(max_new_tokens):
             # keep feeding only the last token and append to the full sequence
             last_token = generated[:, -1:].clone()
-            logits, kv_cache, _ = self(last_token, kv_cache, return_attn_weights=False, return_new_kv_cache=True)
+            logits, kv_cache, _, _ = self(last_token, kv_cache, return_attn_weights=False, return_new_kv_cache=True)
             next_token = self.sample_token(logits[:, -1, :], temperature)
             generated = torch.cat([generated, next_token], dim=1)
 
