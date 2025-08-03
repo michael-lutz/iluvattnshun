@@ -234,7 +234,7 @@ class TransformerLayer(nn.Module):
         return x, new_kv_cache, attn_weights
 
 
-class MultilayerTransformer(nn.Module):
+class Transformer(nn.Module):
     """A multilayer transformer model with RoPE."""
 
     def __init__(
