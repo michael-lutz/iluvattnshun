@@ -20,6 +20,141 @@ MASK_TOKEN = "."
 MASK_ID = 38
 
 
+class WeightSharedTransformer(nn.Module):
+    """A weight-shared transformer model with the following setup:
+
+    Layer 1: 2 heads
+    Layer 2: 1 head
+    Layer 3: 1 head (weight shared to layer 4 and 5)
+    """
+
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int = 128,
+        n_layers: int = 5,
+        rope_base: float = 10000.0,
+        dropout_attn: float = 0.1,
+        dropout_mlp: float = 0.1,
+        dropout_emb: float = 0.1,
+    ):
+        super().__init__()
+        self.d_model = d_model
+
+        self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
+        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)
+        self.dropout_emb = Dropout(dropout_emb)
+        self.initial_layers = nn.ModuleList(
+            [
+                TransformerLayer(d_model, 2, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp),
+                # TransformerLayer(
+                #     d_model, 1, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp
+                # ),
+            ]
+        )
+        self.weight_shared_layer = TransformerLayer(
+            d_model, 1, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp
+        )
+        self.output = nn.Linear(d_model, vocab_size)
+        self.n_layers = n_layers
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        return_new_kv_cache: bool = False,
+        return_attn_weights: bool = False,
+        return_xs: bool = False,
+    ) -> tuple[
+        torch.Tensor,
+        list[tuple[torch.Tensor, torch.Tensor]] | None,
+        list[torch.Tensor] | None,
+        list[torch.Tensor] | None,
+    ]:
+        """Forward pass through the transformer.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_len)
+            kv_cache: Optional list of (key, value) tuples for each layer
+            return_new_kv_cache: Whether to return new KV cache
+            return_attn_weights: Whether to return attention weights
+            return_xs: Whether to return intermediate x, starting at token emb
+
+        Returns:
+            Tuple of (output logits, new kv_cache, attention weights)
+        """
+        x = self.token_embedding(x)  # (batch_size, seq_len, d_model)
+        x = self.dropout_emb(x)
+        new_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = [] if return_new_kv_cache else None
+        attn_weights: list[torch.Tensor] | None = [] if return_attn_weights else None
+        xs: list[torch.Tensor] | None = [x.clone()] if return_xs else None
+
+        layer_kv_cache = kv_cache[0] if kv_cache is not None else None
+        for i, layer in enumerate(self.initial_layers):
+            x, layer_kv_cache, layer_attn_weights = layer(
+                x,
+                layer_kv_cache,
+                return_new_kv_cache=return_new_kv_cache,
+                return_attn_weights=return_attn_weights,
+            )
+
+            if return_new_kv_cache and new_kv_cache is not None and layer_kv_cache is not None:
+                new_kv_cache.append(layer_kv_cache)
+            if return_attn_weights and attn_weights is not None and layer_attn_weights is not None:
+                attn_weights.append(layer_attn_weights)
+            if return_xs and xs is not None:
+                xs.append(x.clone())
+
+        for _ in range(self.n_layers - 1):
+            x, layer_kv_cache, layer_attn_weights = self.weight_shared_layer(
+                x,
+                layer_kv_cache,
+                return_new_kv_cache=return_new_kv_cache,
+                return_attn_weights=return_attn_weights,
+            )
+
+            if return_new_kv_cache and new_kv_cache is not None and layer_kv_cache is not None:
+                new_kv_cache.append(layer_kv_cache)
+            if return_attn_weights and attn_weights is not None and layer_attn_weights is not None:
+                attn_weights.append(layer_attn_weights)
+            if return_xs and xs is not None:
+                xs.append(x.clone())
+
+        logits: torch.Tensor = self.output(x)
+        return logits, new_kv_cache, attn_weights, xs
+
+    def sample_token(self, logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+        next_token_logits = logits / temperature
+        probs = torch.softmax(next_token_logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+        return next_token
+
+    def generate(self, prompt: torch.Tensor, max_new_tokens: int, temperature: float = 1.0) -> torch.Tensor:
+        """Generate new tokens autoregressively.
+
+        Args:
+            prompt: Initial prompt tensor of shape (batch_size, prompt_len)
+            max_new_tokens: Maximum number of new tokens to generate
+            temperature: Sampling temperature (higher = more random)
+
+        Returns:
+            Generated sequence including prompt
+        """
+
+        # run once on the whole prompt to prime the cache
+        _, kv_cache, _ = self(prompt, return_attn_weights=False, return_new_kv_cache=True)
+        generated = prompt  # start with the full prompt
+
+        for _ in range(max_new_tokens):
+            # keep feeding only the last token and append to the full sequence
+            last_token = generated[:, -1:].clone()
+            logits, kv_cache, _ = self(last_token, kv_cache, return_attn_weights=False, return_new_kv_cache=True)
+            next_token = self.sample_token(logits[:, -1, :], temperature)
+            generated = torch.cat([generated, next_token], dim=1)
+
+        return generated
+
+
 @dataclass
 class VariableRenamingConfig(PromptConfig, TrainerConfig):
     """Configuration for variable renaming prompts."""
@@ -201,7 +336,6 @@ class VariableRenamingTrainer(SupervisedTrainer[VariableRenamingConfig]):
         model = TokenTransformer(
             vocab_size=39,
             d_model=self.config.dim_model,
-            n_heads=self.config.num_heads,
             n_layers=self.config.num_layers,
             rope_base=self.config.rope_base,
             dropout_attn=self.config.dropout_attn,
