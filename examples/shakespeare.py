@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from iluvattnshun.nn import MultilayerTransformer
+from iluvattnshun.nn import MultilayerTransformer, TransformerLayer
 from iluvattnshun.trainer import Trainer, TrainerConfig
 from iluvattnshun.types import TensorTree
 
@@ -47,6 +47,104 @@ def load_shakespeare_text(split: str = "train") -> str:
 
     return text
 
+
+class HeirarchicalReasoner(nn.Module):
+    """A heirarchical reasoner (https://arxiv.org/abs/2506.21734)."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int = 512,
+        n_heads: int = 8,
+        n_layers: int = 4,
+        rope_base: float = 10000.0,
+        dropout_attn: float = 0.1,
+        dropout_mlp: float = 0.1,
+        dropout_emb: float = 0.1,
+        l_steps: int = 2,
+        h_steps: int = 2,
+    ):
+        super().__init__()
+
+        self.l_steps = l_steps
+        self.h_steps = h_steps
+
+        # For now, keep low level nn the same as the high level nn
+        self.low_level_nn = nn.Sequential(
+            *[TransformerLayer(d_model, n_heads, rope_base, dropout_attn=0.1, dropout_mlp=0.1) for _ in range(n_layers)]
+        )
+        self.high_level_nn = nn.Sequential(
+            *[TransformerLayer(d_model, n_heads, rope_base, dropout_attn=0.1, dropout_mlp=0.1) for _ in range(n_layers)]
+        )
+
+    def forward(self, x_l: torch.Tensor, x_h: torch.Tensor, x_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass through hierarchical latent reasoner.
+
+        With no gradient: L -> ... -> L -> H -> L -> ... -> L -> H -> ...
+        With gradient:    L -> H
+        """
+        # TODO: experiment with reversing the order (maintain 1-step grad)
+
+        # let the gradients flow through the input
+        with torch.no_grad():
+            for i_h in range(self.h_steps):
+                for i_l in range(self.l_steps):
+                    # skip grad until the last low level call
+                    if not (i_h == self.h_steps - 1 and i_l == self.l_steps - 1):
+                        x_l = self.low_level_nn((x_l + x_h + x_input) / 3)  # div by 3 to keep init variance
+
+                        # TODO: try += and add LayerNorm
+
+                # skip grad until the last high level call
+                if i_h != self.h_steps - 1:
+                    x_h = self.high_level_nn((x_l + x_h) / 2)
+
+        # 1-step grad approximation
+        x_l = self.low_level_nn((x_l + x_h + x_input) / 3)
+        x_h = self.high_level_nn((x_l + x_h) / 2)
+
+        return x_l, x_h
+
+
+class HeirarchicalLanguageModel(nn.Module):
+    """A heirarchical language model."""
+
+    def __init__(
+        self,
+        vocab_size: int,
+        d_model: int = 512,
+        n_heads: int = 8,
+        n_layers: int = 4,
+        rope_base: float = 10000.0,
+        dropout_attn: float = 0.1,
+        dropout_mlp: float = 0.1,
+        dropout_emb: float = 0.1,
+        l_steps: int = 2,
+        h_steps: int = 2,
+    ):
+        super().__init__()
+
+        self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
+        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)
+        self.dropout_emb = nn.Dropout(dropout_emb)
+        self.l_init = nn.Parameter(torch.randn(1, 1, d_model) * d_model**-0.5)
+        self.h_init = nn.Parameter(torch.randn(1, 1, d_model) * d_model**-0.5)
+        self.reasoner = HeirarchicalReasoner(
+            vocab_size, d_model, n_heads, n_layers, rope_base, dropout_attn, dropout_mlp, dropout_emb, l_steps, h_steps
+        )
+        self.output = nn.Linear(d_model, vocab_size)
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass through hierarchical language model."""
+        x_input = self.token_embedding(x)  # (batch_size, seq_len, d_model)
+        x_input = self.dropout_emb(x_input)
+
+        x_l = self.l_init.repeat(x.shape[0], 1, 1)
+        x_h = self.h_init.repeat(x.shape[0], 1, 1)
+        x_l, x_h = self.reasoner(x_l, x_h, x_input)
+
+        return self.output(x_h)
 
 class ShakespeareTrainer(Trainer[ShakespeareConfig]):
     """Training decoder-only transformer for Shakespeare text."""
