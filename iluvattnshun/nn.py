@@ -139,6 +139,7 @@ class Attention(nn.Module):
 
             k = torch.cat([key, k], dim=2)  # (batch, heads, seq + cached, head_dim)
             v = torch.cat([value, v], dim=2)
+            # TODO: maybe pre-allocate size to avoid reallocation
         else:
             # apply RoPE without offset
             q = self.rotary_embedding(q)
@@ -234,8 +235,79 @@ class TransformerLayer(nn.Module):
         return x, new_kv_cache, attn_weights
 
 
-class MultilayerTransformer(nn.Module):
+class Transformer(nn.Module):
     """A multilayer transformer model with RoPE."""
+
+    def __init__(
+        self,
+        d_model: int = 512,
+        n_heads: int = 8,
+        n_layers: int = 12,
+        rope_base: float = 10000.0,
+        dropout_attn: float = 0.1,
+        dropout_mlp: float = 0.1,
+    ):
+        super().__init__()
+        self.d_model = d_model
+
+        self.layers = nn.ModuleList(
+            [
+                TransformerLayer(
+                    d_model, n_heads, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp
+                )
+                for _ in range(n_layers)
+            ]
+        )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
+        return_attn_weights: bool = False,
+        return_xs: bool = False,
+    ) -> tuple[
+        torch.Tensor,
+        list[tuple[torch.Tensor, torch.Tensor]],
+        list[torch.Tensor],
+        list[torch.Tensor],
+    ]:
+        """Forward pass through the transformer.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, d_model)
+            kv_cache: Optional list of (key, value) tuples for each layer
+            return_new_kv_cache: Whether to return new KV cache
+            return_attn_weights: Whether to return attention weights
+            return_xs: Whether to return intermediate x values
+
+        Returns:
+            Tuple of (output embeddings, new kv_cache, attention weights, intermediate xs)
+        """
+        new_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = []
+        attn_weights: list[torch.Tensor] = [] if return_attn_weights else []
+        xs: list[torch.Tensor] = [] if return_xs else []
+
+        for i, layer in enumerate(self.layers):
+            layer_kv_cache = kv_cache[i] if kv_cache is not None else None
+            x, layer_kv_cache, layer_attn_weights = layer.forward(
+                x,
+                layer_kv_cache,
+                return_attn_weights=return_attn_weights,
+                return_new_kv_cache=True,
+            )
+
+            new_kv_cache.append(layer_kv_cache)
+
+            if return_attn_weights:
+                attn_weights.append(layer_attn_weights)
+            if return_xs:
+                xs.append(x)
+
+        return x, new_kv_cache, attn_weights, xs
+
+
+class TokenizingTransformer(nn.Module):
+    """A transformer that takes in tokens and outputs logits."""
 
     def __init__(
         self,
@@ -254,62 +326,48 @@ class MultilayerTransformer(nn.Module):
         self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
         nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)
         self.dropout_emb = Dropout(dropout_emb)
-        self.layers = nn.ModuleList(
-            [
-                TransformerLayer(
-                    d_model, n_heads, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp
-                )
-                for _ in range(n_layers)
-            ]
-        )
+
+        self.transformer = Transformer(d_model, n_heads, n_layers, rope_base, dropout_attn, dropout_mlp)
+
         self.output = nn.Linear(d_model, vocab_size)
 
     def forward(
         self,
         x: torch.Tensor,
         kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
-        return_new_kv_cache: bool = False,
         return_attn_weights: bool = False,
         return_xs: bool = False,
     ) -> tuple[
         torch.Tensor,
-        list[tuple[torch.Tensor, torch.Tensor]] | None,
-        list[torch.Tensor] | None,
-        list[torch.Tensor] | None,
+        list[tuple[torch.Tensor, torch.Tensor]],
+        list[torch.Tensor],
+        list[torch.Tensor],
     ]:
-        """Forward pass through the transformer.
+        """Forward pass through the tokenizing transformer.
 
         Args:
             x: Input tensor of shape (batch_size, seq_len)
             kv_cache: Optional list of (key, value) tuples for each layer
             return_new_kv_cache: Whether to return new KV cache
             return_attn_weights: Whether to return attention weights
-            return_xs: Whether to return intermediate x, starting at token emb
+            return_xs: Whether to return intermediate x values
 
         Returns:
-            Tuple of (output logits, new kv_cache, attention weights)
+            Tuple of (output logits, new kv_cache, attention weights, intermediate xs)
         """
-        x = self.token_embedding(x)  # (batch_size, seq_len, d_model)
-        x = self.dropout_emb(x)
-        new_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] | None = [] if return_new_kv_cache else None
-        attn_weights: list[torch.Tensor] | None = [] if return_attn_weights else None
-        xs: list[torch.Tensor] | None = [x.clone()] if return_xs else None
+        token_emb = self.token_embedding(x)  # (batch_size, seq_len, d_model)
+        x = self.dropout_emb(token_emb)
 
-        for i, layer in enumerate(self.layers):
-            layer_kv_cache = kv_cache[i] if kv_cache is not None else None
-            x, layer_kv_cache, layer_attn_weights = layer(
-                x,
-                layer_kv_cache,
-                return_new_kv_cache=return_new_kv_cache,
-                return_attn_weights=return_attn_weights,
-            )
+        x, new_kv_cache, attn_weights, xs = self.transformer(
+            x,
+            kv_cache,
+            return_attn_weights=return_attn_weights,
+            return_xs=return_xs,
+        )
 
-            if return_new_kv_cache and new_kv_cache is not None and layer_kv_cache is not None:
-                new_kv_cache.append(layer_kv_cache)
-            if return_attn_weights and attn_weights is not None and layer_attn_weights is not None:
-                attn_weights.append(layer_attn_weights)
-            if return_xs and xs is not None:
-                xs.append(x.clone())
+        # adjust xs to include token embedding if requested
+        if return_xs and xs is not None:
+            xs = [token_emb] + xs  # add token emb at start
 
         logits: torch.Tensor = self.output(x)
         return logits, new_kv_cache, attn_weights, xs
@@ -333,13 +391,13 @@ class MultilayerTransformer(nn.Module):
         """
 
         # run once on the whole prompt to prime the cache
-        _, kv_cache, _, _ = self(prompt, return_attn_weights=False, return_new_kv_cache=True)
+        _, kv_cache, _, _ = self(prompt, return_attn_weights=False)
         generated = prompt  # start with the full prompt
 
         for _ in range(max_new_tokens):
             # keep feeding only the last token and append to the full sequence
             last_token = generated[:, -1:].clone()
-            logits, kv_cache, _, _ = self(last_token, kv_cache, return_attn_weights=False, return_new_kv_cache=True)
+            logits, kv_cache, _, _ = self(last_token, kv_cache, return_attn_weights=False)
             next_token = self.sample_token(logits[:, -1, :], temperature)
             generated = torch.cat([generated, next_token], dim=1)
 
