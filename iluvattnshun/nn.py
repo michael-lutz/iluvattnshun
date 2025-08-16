@@ -306,7 +306,7 @@ class Transformer(nn.Module):
         return x, new_kv_cache, attn_weights, xs
 
 
-class TokenizingTransformer(nn.Module):
+class TokenTransformer(nn.Module):
     """A transformer that takes in tokens and outputs logits."""
 
     def __init__(
@@ -343,7 +343,7 @@ class TokenizingTransformer(nn.Module):
         list[torch.Tensor],
         list[torch.Tensor],
     ]:
-        """Forward pass through the tokenizing transformer.
+        """Forward pass through the token transformer.
 
         Args:
             x: Input tensor of shape (batch_size, seq_len)
@@ -392,6 +392,7 @@ class TokenizingTransformer(nn.Module):
 
         # run once on the whole prompt to prime the cache
         _, kv_cache, _, _ = self(prompt, return_attn_weights=False)
+        assert kv_cache, "kv_cache should not be empty when generating"
         generated = prompt  # start with the full prompt
 
         for _ in range(max_new_tokens):

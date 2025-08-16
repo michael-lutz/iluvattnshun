@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LinearLR
 
-from iluvattnshun.nn import MultilayerTransformer
+from iluvattnshun.nn import TokenTransformer
 from iluvattnshun.prompter import PromptConfig, Prompter
 from iluvattnshun.trainer import Trainer, TrainerConfig
 from iluvattnshun.types import TensorTree
@@ -197,7 +197,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
     def get_model(self) -> nn.Module:
         """Get the model."""
-        model = MultilayerTransformer(
+        model = TokenTransformer(
             vocab_size=39,
             d_model=self.config.dim_model,
             n_heads=self.config.num_heads,

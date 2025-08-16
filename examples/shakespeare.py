@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from iluvattnshun.nn import MultilayerTransformer, TransformerLayer
+from iluvattnshun.nn import TokenTransformer, TransformerLayer
 from iluvattnshun.trainer import Trainer, TrainerConfig
 from iluvattnshun.types import TensorTree
 
@@ -134,7 +134,6 @@ class HeirarchicalLanguageModel(nn.Module):
         )
         self.output = nn.Linear(d_model, vocab_size)
 
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through hierarchical language model."""
         x_input = self.token_embedding(x)  # (batch_size, seq_len, d_model)
@@ -145,6 +144,7 @@ class HeirarchicalLanguageModel(nn.Module):
         x_l, x_h = self.reasoner(x_l, x_h, x_input)
 
         return self.output(x_h)
+
 
 class ShakespeareTrainer(Trainer[ShakespeareConfig]):
     """Training decoder-only transformer for Shakespeare text."""
@@ -165,7 +165,7 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 
     def get_model(self) -> nn.Module:
         """Get the model."""
-        return MultilayerTransformer(
+        return TokenTransformer(
             vocab_size=len(self.token_to_id),
             d_model=self.config.d_model,
             n_heads=self.config.n_heads,
@@ -201,7 +201,7 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 
     def post_val_metrics(self, model: nn.Module) -> dict[str, float | str]:
         """Get additional validation metrics for a batch."""
-        assert isinstance(model, MultilayerTransformer), "Making mypy happy"
+        assert isinstance(model, TokenTransformer), "Making mypy happy"
         prompt = "tomorrow"  # and tomorrow and tomorrow...
         prompt_tokens = torch.tensor([self.token_to_id[c] for c in prompt]).to(self.config.device)
         prompt_tokens = prompt_tokens.unsqueeze(0)

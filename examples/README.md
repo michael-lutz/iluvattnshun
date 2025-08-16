@@ -85,7 +85,7 @@ ckpt_path = "<path>/run_<id>/ckpt_epoch_<epoch>.pt"
 config = load_config_from_yaml(config_path, VariableRenamingConfig)
 prompter = VariableRenamingPrompter(config)
 
-model = MultilayerTransformer(
+model = TokenTransformer(
     vocab_size=39,
     d_model=config.dim_model,
     n_heads=config.num_heads,
