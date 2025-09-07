@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from iluvattnshun.nn import TokenTransformer, TransformerLayer
+from iluvattnshun.nn import TokenTransformer, Transformer, TransformerLayer
 from iluvattnshun.trainer import Trainer, TrainerConfig
 from iluvattnshun.types import TensorTree
 
@@ -20,6 +20,10 @@ class ShakespeareConfig(TrainerConfig):
 
     num_layers: int
     """Number of transformer layers."""
+    n_steps_per_cycle: int
+    """Number of steps per cycle."""
+    n_cycles: int
+    """Number of cycles."""
     max_context_length: int
     """Maximum context length for the transformer."""
     d_model: int
@@ -48,102 +52,255 @@ def load_shakespeare_text(split: str = "train") -> str:
     return text
 
 
-class HeirarchicalReasoner(nn.Module):
-    """A heirarchical reasoner (https://arxiv.org/abs/2506.21734)."""
+# class HeirarchicalReasoner(nn.Module):
+#     """A heirarchical reasoner (https://arxiv.org/abs/2506.21734)."""
+
+#     def __init__(
+#         self,
+#         vocab_size: int,
+#         d_model: int = 512,
+#         n_heads: int = 8,
+#         n_layers: int = 4,
+#         rope_base: float = 10000.0,
+#         dropout_attn: float = 0.1,
+#         dropout_mlp: float = 0.1,
+#         dropout_emb: float = 0.1,
+#         l_steps: int = 2,
+#         h_steps: int = 2,
+#     ):
+#         super().__init__()
+
+#         self.l_steps = l_steps
+#         self.h_steps = h_steps
+
+#         # For now, keep low level nn the same as the high level nn
+#         self.low_level_nn = nn.Sequential(
+#             *[TransformerLayer(d_model, n_heads, rope_base, dropout_attn=0.1, dropout_mlp=0.1) for _ in range(n_layers)]
+#         )
+#         self.high_level_nn = nn.Sequential(
+#             *[TransformerLayer(d_model, n_heads, rope_base, dropout_attn=0.1, dropout_mlp=0.1) for _ in range(n_layers)]
+#         )
+
+#     def forward(self, x_l: torch.Tensor, x_h: torch.Tensor, x_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+#         """Forward pass through hierarchical latent reasoner.
+
+#         Args:
+#             x_l: Low level latent state (batch_size, seq_len, d_model)
+#             x_h: High level latent state (batch_size, seq_len, d_model)
+#             x_input: Input tokens (batch_size, seq_len, d_model)
+
+#         Returns:
+#             Tuple of x_l, x_h (batch_size, seq_len, d_model)
+
+#         With no gradient: L -> ... -> L -> H -> L -> ... -> L -> H -> ...
+#         With gradient:    L -> H
+#         """
+#         # TODO: experiment with reversing the order (maintain 1-step grad)
+
+#         # let the gradients flow through the input
+#         with torch.no_grad():
+#             for i_h in range(self.h_steps):
+#                 for i_l in range(self.l_steps):
+#                     # skip grad until the last low level call
+#                     if not (i_h == self.h_steps - 1 and i_l == self.l_steps - 1):
+#                         x_l = self.low_level_nn((x_l + x_h + x_input) / 3)  # div by 3 to keep init variance
+
+#                         # TODO: try += and add LayerNorm
+
+#                 # skip grad until the last high level call
+#                 if i_h != self.h_steps - 1:
+#                     x_h = self.high_level_nn((x_l + x_h) / 2)
+
+#         # 1-step grad approximation
+#         x_l = self.low_level_nn((x_l + x_h + x_input) / 3)
+#         x_h = self.high_level_nn((x_l + x_h) / 2)
+
+#         return x_l, x_h
+
+
+# class HeirarchicalLanguageModel(nn.Module):
+#     """A heirarchical language model."""
+
+#     def __init__(
+#         self,
+#         vocab_size: int,
+#         d_model: int = 512,
+#         n_heads: int = 8,
+#         n_layers: int = 4,
+#         rope_base: float = 10000.0,
+#         dropout_attn: float = 0.1,
+#         dropout_mlp: float = 0.1,
+#         dropout_emb: float = 0.1,
+#         l_steps: int = 2,
+#         h_steps: int = 2,
+#     ):
+#         super().__init__()
+
+#         self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
+#         nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)
+#         self.dropout_emb = nn.Dropout(dropout_emb)
+#         self.l_init = nn.Parameter(torch.randn(1, 1, d_model) * d_model**-0.5)
+#         self.h_init = nn.Parameter(torch.randn(1, 1, d_model) * d_model**-0.5)
+#         self.reasoner = HeirarchicalReasoner(
+#             vocab_size, d_model, n_heads, n_layers, rope_base, dropout_attn, dropout_mlp, dropout_emb, l_steps, h_steps
+#         )
+#         self.output = nn.Linear(d_model, vocab_size)
+
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         """Forward pass through hierarchical language model."""
+#         x_input = self.token_embedding(x)  # (batch_size, seq_len, d_model)
+#         x_input = self.dropout_emb(x_input)
+
+#         x_l = self.l_init.repeat(x.shape[0], 1, 1)
+#         x_h = self.h_init.repeat(x.shape[0], 1, 1)
+#         x_l, x_h = self.reasoner(x_l, x_h, x_input)
+
+#         return self.output(x_h)
+
+
+class RecurrentTransformer(nn.Module):
+    """A transformer weight shared across layers.
+
+    Every cycle, the transformer predicts a new latent state which is then
+    projected into a token prediction.
+    """
 
     def __init__(
         self,
         vocab_size: int,
-        d_model: int = 512,
-        n_heads: int = 8,
-        n_layers: int = 4,
-        rope_base: float = 10000.0,
+        d_model: int,
+        n_heads: int,
+        n_layers: int,
+        n_steps_per_cycle: int,
+        n_cycles: int,
+        rope_base: float,
         dropout_attn: float = 0.1,
         dropout_mlp: float = 0.1,
         dropout_emb: float = 0.1,
-        l_steps: int = 2,
-        h_steps: int = 2,
-    ):
-        super().__init__()
-
-        self.l_steps = l_steps
-        self.h_steps = h_steps
-
-        # For now, keep low level nn the same as the high level nn
-        self.low_level_nn = nn.Sequential(
-            *[TransformerLayer(d_model, n_heads, rope_base, dropout_attn=0.1, dropout_mlp=0.1) for _ in range(n_layers)]
-        )
-        self.high_level_nn = nn.Sequential(
-            *[TransformerLayer(d_model, n_heads, rope_base, dropout_attn=0.1, dropout_mlp=0.1) for _ in range(n_layers)]
-        )
-
-    def forward(self, x_l: torch.Tensor, x_h: torch.Tensor, x_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass through hierarchical latent reasoner.
-
-        With no gradient: L -> ... -> L -> H -> L -> ... -> L -> H -> ...
-        With gradient:    L -> H
-        """
-        # TODO: experiment with reversing the order (maintain 1-step grad)
-
-        # let the gradients flow through the input
-        with torch.no_grad():
-            for i_h in range(self.h_steps):
-                for i_l in range(self.l_steps):
-                    # skip grad until the last low level call
-                    if not (i_h == self.h_steps - 1 and i_l == self.l_steps - 1):
-                        x_l = self.low_level_nn((x_l + x_h + x_input) / 3)  # div by 3 to keep init variance
-
-                        # TODO: try += and add LayerNorm
-
-                # skip grad until the last high level call
-                if i_h != self.h_steps - 1:
-                    x_h = self.high_level_nn((x_l + x_h) / 2)
-
-        # 1-step grad approximation
-        x_l = self.low_level_nn((x_l + x_h + x_input) / 3)
-        x_h = self.high_level_nn((x_l + x_h) / 2)
-
-        return x_l, x_h
-
-
-class HeirarchicalLanguageModel(nn.Module):
-    """A heirarchical language model."""
-
-    def __init__(
-        self,
-        vocab_size: int,
-        d_model: int = 512,
-        n_heads: int = 8,
-        n_layers: int = 4,
-        rope_base: float = 10000.0,
-        dropout_attn: float = 0.1,
-        dropout_mlp: float = 0.1,
-        dropout_emb: float = 0.1,
-        l_steps: int = 2,
-        h_steps: int = 2,
     ):
         super().__init__()
 
         self.token_embedding = nn.Embedding(vocab_size, d_model, scale_grad_by_freq=True)
         nn.init.normal_(self.token_embedding.weight, mean=0.0, std=d_model**-0.5)
         self.dropout_emb = nn.Dropout(dropout_emb)
-        self.l_init = nn.Parameter(torch.randn(1, 1, d_model) * d_model**-0.5)
-        self.h_init = nn.Parameter(torch.randn(1, 1, d_model) * d_model**-0.5)
-        self.reasoner = HeirarchicalReasoner(
-            vocab_size, d_model, n_heads, n_layers, rope_base, dropout_attn, dropout_mlp, dropout_emb, l_steps, h_steps
+
+        # Later, can try using a MoE transformer here
+        self.transformer = Transformer(
+            d_model=d_model,
+            n_heads=n_heads,
+            n_layers=n_layers,
+            rope_base=rope_base,
+            dropout_attn=dropout_attn,
+            dropout_mlp=dropout_mlp,
         )
         self.output = nn.Linear(d_model, vocab_size)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through hierarchical language model."""
-        x_input = self.token_embedding(x)  # (batch_size, seq_len, d_model)
-        x_input = self.dropout_emb(x_input)
+        self.vocab_size = vocab_size
+        self.n_cycles = n_cycles
+        self.n_steps_per_cycle = n_steps_per_cycle
 
-        x_l = self.l_init.repeat(x.shape[0], 1, 1)
-        x_h = self.h_init.repeat(x.shape[0], 1, 1)
-        x_l, x_h = self.reasoner(x_l, x_h, x_input)
+    def forward(
+        self,
+        x: torch.Tensor,
+        kv_cache: list[list[tuple[torch.Tensor, torch.Tensor]]] | None = None,
+        return_attn_weights: bool = False,
+        return_xs: bool = False,
+    ) -> tuple[
+        torch.Tensor,
+        list[list[tuple[torch.Tensor, torch.Tensor]]],
+        list[list[torch.Tensor]],
+        list[list[torch.Tensor]],
+    ]:
+        """Forward pass through the transformer.
 
-        return self.output(x_h)
+        Args:
+            x: Input tensor of shape (batch_size, seq_len)
+            kv_cache: Optional list of (key, value) tuples for each cycle
+            return_attn_weights: Whether to return attention weights
+            return_xs: Whether to return intermediate xs
+
+        Returns:
+            Tuple of (logits, cycle kv_caches)
+        """
+        batch_size, seq_len = x.shape
+        x = self.token_embedding(x)  # (batch_size, seq_len, d_model)
+        x = self.dropout_emb(x)
+        return_logits = torch.empty(self.n_cycles, batch_size, seq_len, self.vocab_size).to(x.device)
+
+        # initialize new cycle-specific caches
+        cycle_kv_caches: list[list[tuple[torch.Tensor, torch.Tensor]]] = []
+        cycle_attn_weights: list[list[torch.Tensor]] = []
+        cycle_xs: list[list[torch.Tensor]] = []
+        for cycle in range(self.n_cycles):
+            cycle_cache = kv_cache[cycle] if kv_cache is not None else None
+
+            for _ in range(self.n_steps_per_cycle - 1):
+                with torch.no_grad():
+                    x, step_kv_cache, _, _ = self.transformer(
+                        x,
+                        kv_cache=cycle_cache,
+                        return_attn_weights=return_attn_weights,
+                        return_xs=return_xs,
+                    )
+
+                cycle_kv_caches.append(step_kv_cache)
+
+            # only final pass receives gradient
+            x, final_kv_cache, final_attn_weights, final_xs = self.transformer(
+                x,
+                kv_cache=cycle_cache,
+                return_attn_weights=return_attn_weights,
+                return_xs=return_xs,
+            )
+
+            # update cycle-specific caches and outputs
+            cycle_kv_caches.append(final_kv_cache)
+            cycle_attn_weights.append(final_attn_weights)
+            cycle_xs.append(final_xs)
+
+            return_logits[cycle] = self.output(x)
+
+            x = x.detach()  # handles case where n_steps_per_cycle == 1
+
+        return return_logits, cycle_kv_caches, cycle_attn_weights, cycle_xs
+
+    def sample_token(self, logits: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
+        next_token_logits = logits / temperature
+        probs = torch.softmax(next_token_logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+        return next_token
+
+    def generate(self, prompt: torch.Tensor, max_new_tokens: int, temperature: float = 1.0) -> torch.Tensor:
+        """Generate new tokens autoregressively."""
+        _, kv_caches, _, _ = self.forward(prompt, return_attn_weights=False, return_xs=False)
+        generated = prompt  # start with the full prompt
+        for _ in range(max_new_tokens):
+            last_token = generated[:, -1:]
+            logits, kv_caches, _, _ = self(last_token, kv_caches, return_attn_weights=False, return_xs=False)
+            final_logits = logits[-1]
+            next_token = self.sample_token(final_logits[:, -1, :], temperature)
+            generated = torch.cat([generated, next_token], dim=1)
+        return generated
+
+
+def multicycle_cross_entropy_loss(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Computes the cross-entropy loss over multiple cycles.
+
+    Args:
+        logits: (n_cycles, batch_size, seq_len, vocab_size)
+        target: (batch_size, seq_len)
+
+    Returns:
+        Loss tensor of shape (1,)
+    """
+    n_cycles, _, _, vocab_size = logits.shape
+
+    target = target.repeat(n_cycles, 1)  # (n_cycles * batch_size, seq_len)
+    target = target.reshape(-1)  # (n_cycles * batch_size * seq_len)
+    logits = logits.reshape(-1, vocab_size)  # (n_cycles * batch_size * seq_len, vocab_size)
+
+    return nn.functional.cross_entropy(logits, target)
 
 
 class ShakespeareTrainer(Trainer[ShakespeareConfig]):
@@ -158,18 +315,29 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
         self.id_to_token = {i: ch for i, ch in enumerate(unique_tokens)}
 
         # tiny_shakespeare is small, so we store in GPU mem for faster access
-        self.train_token_ids = torch.tensor([self.token_to_id[c] for c in self.train_ds])
-        self.val_token_ids = torch.tensor([self.token_to_id[c] for c in self.val_ds])
-        self.train_token_ids.to(self.config.device)
-        self.val_token_ids.to(self.config.device)
+        self.train_token_ids = torch.tensor([self.token_to_id[c] for c in self.train_ds]).to(self.config.device)
+        self.val_token_ids = torch.tensor([self.token_to_id[c] for c in self.val_ds]).to(self.config.device)
 
     def get_model(self) -> nn.Module:
         """Get the model."""
-        return TokenTransformer(
+        # return TokenTransformer(
+        #     vocab_size=len(self.token_to_id),
+        #     d_model=self.config.d_model,
+        #     n_heads=self.config.n_heads,
+        #     n_layers=self.config.num_layers,
+        #     rope_base=self.config.rope_base,
+        #     dropout_attn=0.0,
+        #     dropout_mlp=0.0,
+        #     dropout_emb=0.0,
+        # )
+
+        return RecurrentTransformer(
             vocab_size=len(self.token_to_id),
             d_model=self.config.d_model,
             n_heads=self.config.n_heads,
             n_layers=self.config.num_layers,
+            n_steps_per_cycle=self.config.n_steps_per_cycle,
+            n_cycles=self.config.n_cycles,
             rope_base=self.config.rope_base,
         )
 
@@ -179,15 +347,17 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 
     def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
         """Returns the cross-entropy loss over the final token logits."""
-        logits, _, _, _ = model(batch["prompt_tokens"])  # (batch_size, seq_len, vocab_size)
+        logits, _, _, _ = model(batch["prompt_tokens"])  # (n_cycles, batch_size, seq_len, vocab_size)
         target = batch["answer_tokens"]  # (batch_size, seq_len)
+        loss = multicycle_cross_entropy_loss(logits, target)
+        return loss, logits
 
         # flatten for cross entropy
-        _, _, vocab_size = logits.shape
-        logits_flat = logits.reshape(-1, vocab_size)
-        target_flat = target.reshape(-1)
+        # _, _, vocab_size = logits.shape
+        # logits_flat = logits.reshape(-1, vocab_size)
+        # target_flat = target.reshape(-1)
 
-        return nn.functional.cross_entropy(logits_flat, target_flat), logits
+        # return nn.functional.cross_entropy(logits_flat, target_flat), logits
 
     def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """Get additional validation metrics for a batch."""
@@ -201,7 +371,7 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 
     def post_val_metrics(self, model: nn.Module) -> dict[str, float | str]:
         """Get additional validation metrics for a batch."""
-        assert isinstance(model, TokenTransformer), "Making mypy happy"
+        assert isinstance(model, RecurrentTransformer), "Making mypy happy"
         prompt = "tomorrow"  # and tomorrow and tomorrow...
         prompt_tokens = torch.tensor([self.token_to_id[c] for c in prompt]).to(self.config.device)
         prompt_tokens = prompt_tokens.unsqueeze(0)
@@ -232,7 +402,7 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
         for i in range(num_batches):
             idx = torch.arange(i * self.config.batch_size, (i + 1) * self.config.batch_size)
             windows = idx.unsqueeze(1) + torch.arange(self.config.max_context_length)
-
+            windows = windows.to(self.config.device)
             # naive truncation
             windows[windows >= self.val_token_ids.shape[0] - 1] = 0
 
@@ -248,8 +418,10 @@ class ShakespeareTrainer(Trainer[ShakespeareConfig]):
 
 if __name__ == "__main__":
     config = ShakespeareConfig(
-        num_layers=8,
-        d_model=128,
+        num_layers=1,
+        n_steps_per_cycle=4,
+        n_cycles=1,
+        d_model=32,
         n_heads=4,
         rope_base=1024,
         max_context_length=128,
