@@ -12,7 +12,7 @@ from torch.optim.lr_scheduler import LinearLR
 
 from iluvattnshun.nn import TokenTransformer
 from iluvattnshun.prompter import PromptConfig, Prompter
-from iluvattnshun.trainer import Trainer, TrainerConfig
+from iluvattnshun.trainer import SupervisedTrainer, TrainerConfig
 from iluvattnshun.types import TensorTree
 
 MASK_TOKEN = "."
@@ -168,7 +168,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         return "".join([inverse_tokenization_map[token] for token in tokens])
 
 
-class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
+class VariableRenamingTrainer(SupervisedTrainer[VariableRenamingConfig]):
     """Training decoder-only transformer for variable renaming."""
 
     def init_state(self) -> None:
@@ -213,7 +213,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         """Returns a basic Adam optimizer."""
         return optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
 
-    def get_scheduler(self, optimizer: optim.Optimizer) -> LinearLR | None:
+    def get_lr_scheduler(self, optimizer: optim.Optimizer) -> LinearLR | None:
         """Returns a learning rate scheduler."""
         if self.config.warmup_steps == 0:
             return None

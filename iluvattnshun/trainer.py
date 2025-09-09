@@ -108,13 +108,9 @@ class Trainer(ABC, Generic[ConfigType]):
     def get_optimizer(self, model: nn.Module) -> optim.Optimizer:
         """Get the optimizer."""
 
-    def get_scheduler(self, optimizer: optim.Optimizer) -> optim.lr_scheduler.LRScheduler | None:
+    def get_lr_scheduler(self, optimizer: optim.Optimizer) -> optim.lr_scheduler.LRScheduler | None:
         """(Optional) Get the learning rate scheduler."""
         return None
-
-    @abstractmethod
-    def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
-        """Get loss and predictions for a batch."""
 
     def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
         """(Optional) Get additional validation metrics for a batch."""
@@ -132,6 +128,7 @@ class Trainer(ABC, Generic[ConfigType]):
     def get_val_dataloader(self) -> Iterable[TensorTree]:
         """Get the val dataloader."""
 
+    @abstractmethod
     def train_step(
         self,
         model: nn.Module,
@@ -140,27 +137,10 @@ class Trainer(ABC, Generic[ConfigType]):
         batch: TensorTree,
     ) -> dict[str, float | str]:
         """Train step."""
-        # TODO: think about ownership of .train and .zero_grad for safe override
-        assert model.training, "Model must be in training mode"
-        optimizer.zero_grad()
-        loss, _ = self.get_loss(model, batch)
-        loss.backward()
-        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.config.grad_norm_max)
-        optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
 
-        current_lr = optimizer.param_groups[0]["lr"]
-
-        return {"loss": loss.item(), "lr": current_lr, "grad_norm": grad_norm.item()}
-
+    @abstractmethod
     def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
         """Returns eval metrics."""
-        assert not model.training, "Model must be in evaluation mode"
-        loss, preds = self.get_loss(model, batch)
-        metrics: dict[str, float | str] = {"loss": loss.item()}
-        metrics.update(self.val_metrics(model, batch, preds))
-        return metrics
 
     def save_checkpoint(
         self,
@@ -198,7 +178,7 @@ class Trainer(ABC, Generic[ConfigType]):
         """Creates or loads training variables and begins training."""
         model = self.get_model().to(self.config.device)
         optimizer = self.get_optimizer(model)
-        scheduler = self.get_scheduler(optimizer)
+        scheduler = self.get_lr_scheduler(optimizer)
         train_loader = self.get_train_dataloader()
         val_loader = self.get_val_dataloader()
 
@@ -282,3 +262,41 @@ class Trainer(ABC, Generic[ConfigType]):
                 self.last_checkpoint_time = time()
 
             epoch_dec -= 1
+
+
+class SupervisedTrainer(Trainer[ConfigType]):
+    """Supervised trainer class."""
+
+    @abstractmethod
+    def get_loss(self, model: nn.Module, batch: TensorTree) -> tuple[torch.Tensor, torch.Tensor]:
+        """Get loss and predictions for a batch."""
+
+    def train_step(
+        self,
+        model: nn.Module,
+        optimizer: optim.Optimizer,
+        scheduler: optim.lr_scheduler.LRScheduler | None,
+        batch: TensorTree,
+    ) -> dict[str, float | str]:
+        """Supervised train step."""
+        # TODO: think about ownership of .train and .zero_grad for safe override
+        assert model.training, "Model must be in training mode"
+        optimizer.zero_grad()
+        loss, _ = self.get_loss(model, batch)
+        loss.backward()
+        grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.config.grad_norm_max)
+        optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
+
+        current_lr = optimizer.param_groups[0]["lr"]
+
+        return {"loss": loss.item(), "lr": current_lr, "grad_norm": grad_norm.item()}
+
+    def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
+        """Supervised val step."""
+        assert not model.training, "Model must be in evaluation mode"
+        loss, preds = self.get_loss(model, batch)
+        metrics: dict[str, float | str] = {"loss": loss.item()}
+        metrics.update(self.val_metrics(model, batch, preds))
+        return metrics

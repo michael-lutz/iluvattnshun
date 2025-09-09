@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from iluvattnshun.nn import TokenTransformer, TransformerLayer
-from iluvattnshun.trainer import Trainer, TrainerConfig
+from iluvattnshun.trainer import SupervisedTrainer, TrainerConfig
 from iluvattnshun.types import TensorTree
 
 
@@ -146,7 +146,7 @@ class HeirarchicalLanguageModel(nn.Module):
         return self.output(x_h)
 
 
-class ShakespeareTrainer(Trainer[ShakespeareConfig]):
+class ShakespeareTrainer(SupervisedTrainer[ShakespeareConfig]):
     """Training decoder-only transformer for Shakespeare text."""
 
     def init_state(self) -> None:
