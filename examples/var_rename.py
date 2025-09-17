@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LinearLR
 
+from iluvattnshun.logger import Loggable
 from iluvattnshun.nn import TokenTransformer
 from iluvattnshun.prompter import PromptConfig, Prompter
 from iluvattnshun.trainer import SupervisedTrainer, TrainerConfig
@@ -250,43 +251,48 @@ class VariableRenamingTrainer(SupervisedTrainer[VariableRenamingConfig]):
 
         return loss, logits
 
-    def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
-        """Get additional validation metrics for a batch."""
-        predicted_answers = preds.argmax(dim=-1)  # (batch, seq)
-        target = batch["answer_tokens"].to(predicted_answers.device)  # (batch, seq)
-        mask = target != MASK_ID  # (batch, seq)
+    def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, Loggable]:
+        """Validation step with basic metrics."""
+        with torch.no_grad():
+            # compute loss and predictions
+            loss, preds = self.get_loss(model, batch)
 
-        correct = ((predicted_answers == target) & mask).float()
-        total_accuracy = correct.sum() / mask.sum()
+            predicted_answers = preds.argmax(dim=-1)  # (batch, seq)
+            target = batch["answer_tokens"].to(predicted_answers.device)  # (batch, seq)
+            mask = target != MASK_ID  # (batch, seq)
 
-        # Compute per-depth accuracy
-        depth_tensor = batch["depths"].to(predicted_answers.device)  # (batch, seq)
-        depth_metrics = {}
-        for depth_val in torch.unique(depth_tensor[mask]):
-            depth_mask = (depth_tensor == depth_val) & mask
-            correct_at_depth = ((predicted_answers == target) & depth_mask).float()
-            acc = correct_at_depth.sum() / depth_mask.sum()
-            depth_metrics[f"acc_per_depth/{int(depth_val)}"] = acc.item()
+            correct = ((predicted_answers == target) & mask).float()
+            total_accuracy = correct.sum() / mask.sum()
 
-        # Sample decoding info
-        sample_idx = 0
-        sample_prompt = batch["prompt"][sample_idx]
-        sample_answer = batch["answer"][sample_idx]
-        sample_pred_token_ids = predicted_answers[sample_idx].tolist()
-        predicted_answer = self.prompter.detokenize(sample_pred_token_ids)
-        correct_str = "".join(
-            "." if sample_answer[i] == MASK_TOKEN else "✓" if sample_answer[i] == predicted_answer[i] else "✗"
-            for i in range(len(sample_answer))
-        )
+            # Compute per-depth accuracy
+            depth_tensor = batch["depths"].to(predicted_answers.device)  # (batch, seq)
+            depth_metrics = {}
+            for depth_val in torch.unique(depth_tensor[mask]):
+                depth_mask = (depth_tensor == depth_val) & mask
+                correct_at_depth = ((predicted_answers == target) & depth_mask).float()
+                acc = correct_at_depth.sum() / depth_mask.sum()
+                depth_metrics[f"acc_per_depth/{int(depth_val)}"] = acc.item()
 
-        return {
-            "sample_prompt": sample_prompt,
-            "sample_answer": sample_answer,
-            "sample_pred": predicted_answer,
-            "sample_correct": correct_str,
-            "accuracy": total_accuracy.item(),
-            **depth_metrics,
-        }
+            # Sample decoding info
+            sample_idx = 0
+            sample_prompt = batch["prompt"][sample_idx]
+            sample_answer = batch["answer"][sample_idx]
+            sample_pred_token_ids = predicted_answers[sample_idx].tolist()
+            predicted_answer = self.prompter.detokenize(sample_pred_token_ids)
+            correct_str = "".join(
+                "." if sample_answer[i] == MASK_TOKEN else "✓" if sample_answer[i] == predicted_answer[i] else "✗"
+                for i in range(len(sample_answer))
+            )
+
+            return {
+                "loss": loss.item(),
+                "sample_prompt": sample_prompt,
+                "sample_answer": sample_answer,
+                "sample_pred": predicted_answer,
+                "sample_correct": correct_str,
+                "accuracy": total_accuracy.item(),
+                **depth_metrics,
+            }
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
         """Get the train dataloader."""

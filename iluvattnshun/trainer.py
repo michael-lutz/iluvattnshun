@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from iluvattnshun.logger import Logger
+from iluvattnshun.logger import Loggable, Logger
 from iluvattnshun.types import TensorTree
 from iluvattnshun.utils import (
     get_yaml_string,
@@ -112,14 +112,6 @@ class Trainer(ABC, Generic[ConfigType]):
         """(Optional) Get the learning rate scheduler."""
         return None
 
-    def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
-        """(Optional) Get additional validation metrics for a batch."""
-        return {}
-
-    def post_val_metrics(self, model: nn.Module) -> dict[str, float | str]:
-        """(Optional) Metrics unrelated to data (e.g. sample generations)."""
-        return {}
-
     @abstractmethod
     def get_train_dataloader(self) -> Iterable[TensorTree]:
         """Get the train dataloader."""
@@ -135,12 +127,19 @@ class Trainer(ABC, Generic[ConfigType]):
         optimizer: optim.Optimizer,
         scheduler: optim.lr_scheduler.LRScheduler | None,
         batch: TensorTree,
-    ) -> dict[str, float | str]:
+    ) -> dict[str, Loggable]:
         """Train step."""
 
     @abstractmethod
-    def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
-        """Returns eval metrics."""
+    def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, Loggable]:
+        """Validation step."""
+
+    def post_val_step(self, model: nn.Module) -> dict[str, Loggable]:
+        """Post-validation step that runs once after all validation batches.
+
+        This is where you can do expensive operations like generation, sampling, etc.
+        """
+        return {}
 
     def save_checkpoint(
         self,
@@ -148,7 +147,7 @@ class Trainer(ABC, Generic[ConfigType]):
         optimizer: optim.Optimizer,
         epoch: int,
         step: dict[Literal["train", "val"], int],
-        metrics: dict[str, float | str],
+        metrics: dict[str, Loggable],
         scheduler: optim.lr_scheduler.LRScheduler | None = None,
     ) -> None:
         """Save a checkpoint of the model and training state."""
@@ -185,7 +184,7 @@ class Trainer(ABC, Generic[ConfigType]):
         # load checkpoint if specified
         start_epoch = 0
         if self.config.load_model_path is not None:
-            epoch, step, metrics = load_checkpoint(
+            epoch, step, loaded_metrics = load_checkpoint(
                 self.config.load_model_path,
                 model=model,
                 optimizer=optimizer,
@@ -194,7 +193,7 @@ class Trainer(ABC, Generic[ConfigType]):
             )
             start_epoch = epoch
             self.logger.step = step
-            if metrics is not None:
+            if loaded_metrics is not None:
                 self.logger.log_text(
                     "Checkpointing",
                     f"Loaded checkpoint at epoch {epoch}, step {step}",
@@ -212,16 +211,15 @@ class Trainer(ABC, Generic[ConfigType]):
                 if training_samples >= eval_steps * self.config.eval_every_n_samples:
                     model.eval()
                     with torch.no_grad():
-                        # TODO: fully support Loggable type (including dicts)
-                        eval_metrics: dict[str, float | str] = {}
+                        eval_metrics: dict[str, Loggable] = {}
                         eval_size = 0
 
                         for val_batch in val_loader:
                             val_batch = move_to_device(val_batch, self.config.device)
-                            metrics = self.val_step(model, val_batch)
+                            val_metrics = self.val_step(model, val_batch)
 
-                            # handle float and string metrics separately
-                            for k, v in metrics.items():
+                            for k, v in val_metrics.items():
+                                # for floats, loop through all the floats and add them up
                                 if isinstance(v, float):
                                     if k not in eval_metrics:
                                         eval_metrics[k] = 0.0
@@ -229,12 +227,16 @@ class Trainer(ABC, Generic[ConfigType]):
                                     assert isinstance(prev, float)
                                     eval_metrics[k] = prev + v
                                 else:
-                                    eval_metrics[k] = v  # only keep the last string
+                                    eval_metrics[k] = v  # keep the last non-float value
                             eval_size += 1
 
                     # average the float metrics
                     eval_metrics = {k: v / eval_size if isinstance(v, float) else v for k, v in eval_metrics.items()}
-                    eval_metrics.update(self.post_val_metrics(model))
+
+                    # run post-validation step for expensive operations
+                    post_val_metrics = self.post_val_step(model)
+                    eval_metrics.update(post_val_metrics)
+
                     self.logger.log_metrics(
                         eval_metrics,
                         mode="val",
@@ -246,7 +248,7 @@ class Trainer(ABC, Generic[ConfigType]):
                 model.train()
                 training_samples += self.config.batch_size
                 batch = move_to_device(batch, self.config.device)
-                metrics = self.train_step(model, optimizer, scheduler, batch)
+                metrics: dict[str, Loggable] = self.train_step(model, optimizer, scheduler, batch)
                 self.logger.log_metrics(
                     metrics,
                     mode="train",
@@ -277,7 +279,7 @@ class SupervisedTrainer(Trainer[ConfigType]):
         optimizer: optim.Optimizer,
         scheduler: optim.lr_scheduler.LRScheduler | None,
         batch: TensorTree,
-    ) -> dict[str, float | str]:
+    ) -> dict[str, Loggable]:
         """Supervised train step."""
         # TODO: think about ownership of .train and .zero_grad for safe override
         assert model.training, "Model must be in training mode"
@@ -292,11 +294,3 @@ class SupervisedTrainer(Trainer[ConfigType]):
         current_lr = optimizer.param_groups[0]["lr"]
 
         return {"loss": loss.item(), "lr": current_lr, "grad_norm": grad_norm.item()}
-
-    def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, float | str]:
-        """Supervised val step."""
-        assert not model.training, "Model must be in evaluation mode"
-        loss, preds = self.get_loss(model, batch)
-        metrics: dict[str, float | str] = {"loss": loss.item()}
-        metrics.update(self.val_metrics(model, batch, preds))
-        return metrics

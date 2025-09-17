@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from iluvattnshun.logger import Loggable
 from iluvattnshun.nn import TokenTransformer, TransformerLayer
 from iluvattnshun.trainer import SupervisedTrainer, TrainerConfig
 from iluvattnshun.types import TensorTree
@@ -143,7 +144,7 @@ class HeirarchicalLanguageModel(nn.Module):
         x_h = self.h_init.repeat(x.shape[0], 1, 1)
         x_l, x_h = self.reasoner(x_l, x_h, x_input)
 
-        return self.output(x_h)
+        return self.output(x_h)  # type: ignore
 
 
 class ShakespeareTrainer(SupervisedTrainer[ShakespeareConfig]):
@@ -189,27 +190,33 @@ class ShakespeareTrainer(SupervisedTrainer[ShakespeareConfig]):
 
         return nn.functional.cross_entropy(logits_flat, target_flat), logits
 
-    def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
-        """Get additional validation metrics for a batch."""
-        predicted_chars = preds.argmax(dim=-1)
-        target = batch["answer_tokens"].to(predicted_chars.device)
-        total_accuracy = torch.mean((predicted_chars == target).float()).item()
+    def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, Loggable]:
+        """Validation step with basic metrics."""
+        with torch.no_grad():
+            # compute loss and predictions
+            loss, preds = self.get_loss(model, batch)
 
-        return {
-            "accuracy": total_accuracy,
-        }
+            # compute accuracy
+            predicted_chars = preds.argmax(dim=-1)
+            target = batch["answer_tokens"].to(predicted_chars.device)
+            total_accuracy = torch.mean((predicted_chars == target).float()).item()
 
-    def post_val_metrics(self, model: nn.Module) -> dict[str, float | str]:
-        """Get additional validation metrics for a batch."""
-        assert isinstance(model, TokenTransformer), "Making mypy happy"
-        prompt = "tomorrow"  # and tomorrow and tomorrow...
-        prompt_tokens = torch.tensor([self.token_to_id[c] for c in prompt]).to(self.config.device)
-        prompt_tokens = prompt_tokens.unsqueeze(0)
-        generated = model.generate(prompt_tokens, max_new_tokens=100, temperature=0.8)
-        generated_text = "".join(self.id_to_token[int(t.item())] for t in generated[0])
-        return {
-            "generated_text": generated_text,
-        }
+            return {
+                "loss": loss.item(),
+                "accuracy": total_accuracy,
+            }
+
+    def post_val_step(self, model: nn.Module) -> dict[str, Loggable]:
+        """Post-validation step with text generation."""
+        with torch.no_grad():
+            assert isinstance(model, TokenTransformer), "Making mypy happy"
+            prompt = "tomorrow"  # and tomorrow and tomorrow...
+            prompt_tokens = torch.tensor([self.token_to_id[c] for c in prompt]).to(self.config.device)
+            prompt_tokens = prompt_tokens.unsqueeze(0)
+            generated = model.generate(prompt_tokens, max_new_tokens=100, temperature=0.8)
+            generated_text = "".join(self.id_to_token[int(t.item())] for t in generated[0])
+
+            return {"generated_text": generated_text}
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
         """Training with IID sampling (indefinitely)."""

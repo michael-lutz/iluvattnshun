@@ -1,10 +1,21 @@
 """Base logger class."""
 
+import io
 import os
 import shutil
 from datetime import datetime
 from time import time
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal, Union
+
+import numpy as np
+import torch
+from PIL import Image
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+else:
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
 
 from colorama import Fore, Style
 from colorama import init as colorama_init
@@ -14,8 +25,8 @@ colorama_init(autoreset=True)
 
 KeyedMetric = dict[str | int | bool, float | int | bool]
 """E.g. {'A': 10, 'B': 20, 'C': 30}."""
-Loggable = float | str | bool | KeyedMetric
-"""Loggable types are float, str, bool, or a dict of str, int, or bool to float, int, or bool."""
+Loggable = float | str | bool | KeyedMetric | Union[torch.Tensor, "np.ndarray[Any, Any]", Image.Image, "Figure"]
+"""Loggable types are float, str, bool, dict, or image data (tensor, numpy array, PIL Image, matplotlib Figure)."""
 
 
 class Logger:
@@ -118,6 +129,8 @@ class Logger:
                     self.tb_writer.add_text(f"{mode}/{k}", v, self.step[mode])
                 elif isinstance(v, dict):
                     self.tb_writer.add_scalars(f"{mode}/{k}", v, self.step[mode])
+                elif isinstance(v, (torch.Tensor, np.ndarray, Image.Image, Figure)):
+                    self.log_image(f"{mode}/{k}", v, self.step[mode], save_to_file=False, write_to_console=False)
 
             for k, v in header.items():
                 if isinstance(v, float) or isinstance(v, int):
@@ -158,6 +171,17 @@ class Logger:
                     metric_lines.append(
                         f"↳{Fore.WHITE}{k:<20}:{Style.RESET_ALL} {mode_color}{self.format_value(v)}{Style.RESET_ALL}"
                     )
+            elif isinstance(value, (torch.Tensor, np.ndarray, Image.Image, Figure)):
+                # Handle image data - show a summary
+                metric_lines.append(
+                    f"{Fore.WHITE}{name:<20}:{Style.RESET_ALL} {mode_color}[Image Data]{Style.RESET_ALL}"
+                )
+                # Optionally show ASCII representation
+                try:
+                    pil_image = self._convert_to_pil(value)
+                    self._write_image_to_console(f"{mode}/{name}", pil_image, self.step[mode])
+                except Exception:
+                    pass  # Skip if image conversion fails
 
         frame = ["\n", horizontal_rule, header_str, horizontal_rule]
         frame.extend(metric_lines)
@@ -242,3 +266,149 @@ class Logger:
 
         if write_to_console:
             self.write_text_to_console(name, text)
+
+    def log_image(
+        self,
+        tag: str,
+        image: Union[torch.Tensor, np.ndarray, Image.Image, "Figure"],
+        step: int | None = None,
+        save_to_file: bool = True,
+        write_to_console: bool = False,
+    ) -> None:
+        """Log an image to TensorBoard and optionally save to file.
+
+        Args:
+            tag: Name/tag for the image
+            image: Image data in various formats:
+                - torch.Tensor: shape (C, H, W) or (H, W, C) or (H, W)
+                - np.ndarray: shape (H, W, C) or (H, W)
+                - PIL.Image: PIL Image object
+                - matplotlib.pyplot.Figure: Matplotlib figure
+            step: Step number (uses current train step if None)
+            save_to_file: Whether to save image file to log directory
+            write_to_console: Whether to display ASCII representation in console
+        """
+        if step is None:
+            step = self.step["train"]
+
+        # Convert various image formats to PIL Image
+        pil_image = self._convert_to_pil(image)
+
+        # Log to TensorBoard
+        if self.tb_writer is not None:
+            # Convert PIL to tensor for TensorBoard
+            img_array = np.array(pil_image)
+            if len(img_array.shape) == 2:  # grayscale
+                img_array = np.expand_dims(img_array, axis=2)
+            if img_array.shape[2] == 1:  # single channel
+                img_array = np.repeat(img_array, 3, axis=2)
+
+            # TensorBoard expects (C, H, W)
+            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).float()
+            if img_tensor.max() > 1.0:
+                img_tensor = img_tensor / 255.0
+
+            self.tb_writer.add_image(tag, img_tensor, step)
+
+        # Save to file if requested
+        if save_to_file and self.log_dir is not None:
+            file_path = os.path.join(self.log_dir, f"{tag}_step_{step}.png")
+            pil_image.save(file_path)
+
+        # Display in console if requested
+        if write_to_console:
+            self._write_image_to_console(tag, pil_image, step)
+
+    def _convert_to_pil(self, image: Union[torch.Tensor, "np.ndarray[Any, Any]", Image.Image, "Figure"]) -> Image.Image:
+        """Convert various image formats to PIL Image."""
+        if isinstance(image, Image.Image):
+            return image
+        elif isinstance(image, Figure):
+            # Convert matplotlib figure to PIL
+            buf = io.BytesIO()
+            image.savefig(buf, format="png", bbox_inches="tight", dpi=150)
+            buf.seek(0)
+            return Image.open(buf)
+        elif isinstance(image, torch.Tensor):
+            # Convert tensor to numpy
+            if image.requires_grad:
+                image = image.detach()
+            img_np = image.cpu().numpy()
+            return self._numpy_to_pil(img_np)
+        elif isinstance(image, np.ndarray):
+            return self._numpy_to_pil(image)
+        else:
+            raise ValueError(f"Unsupported image type: {type(image)}")
+
+    def _numpy_to_pil(self, img_np: "np.ndarray[Any, Any]") -> Image.Image:
+        """Convert numpy array to PIL Image."""
+        # Handle different array shapes
+        if len(img_np.shape) == 2:  # (H, W) grayscale
+            if img_np.max() <= 1.0:
+                img_np = (img_np * 255).astype(np.uint8)
+            return Image.fromarray(img_np, mode="L")
+        elif len(img_np.shape) == 3:
+            if img_np.shape[0] in [1, 3, 4]:  # (C, H, W)
+                img_np = img_np.transpose(1, 2, 0)  # to (H, W, C)
+
+            # Remove single channel dimension
+            if img_np.shape[2] == 1:
+                img_np = img_np.squeeze(2)
+                if img_np.max() <= 1.0:
+                    img_np = (img_np * 255).astype(np.uint8)
+                return Image.fromarray(img_np, mode="L")
+
+            # Handle RGB/RGBA
+            if img_np.max() <= 1.0:
+                img_np = (img_np * 255).astype(np.uint8)
+
+            if img_np.shape[2] == 3:
+                return Image.fromarray(img_np, mode="RGB")
+            elif img_np.shape[2] == 4:
+                return Image.fromarray(img_np, mode="RGBA")
+
+        raise ValueError(f"Unsupported array shape: {img_np.shape}")
+
+    def _write_image_to_console(self, tag: str, pil_image: Image.Image, step: int) -> None:
+        """Display ASCII representation of image in console."""
+        # Convert to grayscale for ASCII display
+        gray_image = pil_image.convert("L")
+
+        # Resize to fit in console (max 80 chars wide, maintain aspect ratio)
+        term_width, _ = self.get_terminal_size()
+        max_width = min(80, term_width - 10)
+
+        width, height = gray_image.size
+        aspect_ratio = height / width
+        new_width = min(max_width, width)
+        new_height = int(new_width * aspect_ratio * 0.5)  # 0.5 to account for character aspect ratio
+
+        resized = gray_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        pixels = np.array(resized)
+
+        # ASCII characters from dark to light
+        ascii_chars = " .:-=+*#%@"
+
+        # Convert pixels to ASCII
+        ascii_lines = []
+        for row in pixels:
+            ascii_row = ""
+            for pixel in row:
+                char_idx = int((pixel / 255.0) * (len(ascii_chars) - 1))
+                ascii_row += ascii_chars[char_idx]
+            ascii_lines.append(ascii_row)
+
+        # Create console display
+        ascii_art = "\n".join(ascii_lines)
+        header = f"Image: {tag} (step {step}) - {pil_image.size[0]}x{pil_image.size[1]}px"
+
+        # Display with frame
+        term_width, term_height = self.get_terminal_size()
+        horizontal_rule = f"{Fore.BLUE}{'─' * term_width}{Style.RESET_ALL}"
+        header_str = f"{Fore.MAGENTA}{header}{Style.RESET_ALL}"
+
+        frame = ["\n", horizontal_rule, header_str, horizontal_rule]
+        frame.extend(ascii_art.split("\n"))
+        frame.append(f"{Fore.BLUE}{'╶' * term_width}{Style.RESET_ALL}")
+
+        print("\n".join(frame))

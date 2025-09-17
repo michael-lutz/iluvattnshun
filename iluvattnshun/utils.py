@@ -2,13 +2,14 @@
 
 import os
 import sys
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, replace
 from typing import Any, Literal
 
 import torch
 import torch.nn as nn
 import yaml
 
+from iluvattnshun.logger import Loggable
 from iluvattnshun.types import TensorTree
 
 
@@ -36,7 +37,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     step: dict[Literal["train", "val"], int],
-    metrics: dict[str, float | str],
+    metrics: dict[str, Loggable],
     scheduler: Any = None,
     **kwargs: Any,
 ) -> None:
@@ -76,7 +77,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     scheduler: Any | None = None,
     map_location: str | None = None,
-) -> tuple[int, dict[Literal["train", "val"], int], dict[str, float | str]]:
+) -> tuple[int, dict[Literal["train", "val"], int], dict[str, Loggable]]:
     """Load the model and opt in-place and returns the epoch, step, and metrics.
 
     Args:
