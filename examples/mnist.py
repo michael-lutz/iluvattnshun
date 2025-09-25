@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from einops import parse_shape, rearrange
+from einops import rearrange
 from sklearn.datasets import fetch_openml  # type: ignore
 
 from iluvattnshun.logger import Loggable
@@ -96,10 +96,10 @@ class BasicBlock(nn.Module):
 
         BasicBlock(x) = ReLU( x + Conv3x3( ReLU( Conv3x3(x) ) ) )
 
-    This version supports an additive shift parameterized by time.
+    This version supports an additive shift parameterized by time and label.
     """
 
-    def __init__(self, in_c: int, out_c: int, time_c: int) -> None:
+    def __init__(self, in_c: int, out_c: int, time_c: int, label_c: int) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(in_c, out_c, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_c)
@@ -110,6 +110,11 @@ class BasicBlock(nn.Module):
             nn.ReLU(),
             nn.Linear(time_c, out_c),
         )
+        self.mlp_label = nn.Sequential(
+            nn.Linear(label_c, label_c),
+            nn.ReLU(),
+            nn.Linear(label_c, out_c),
+        )
         if in_c == out_c:
             self.shortcut = nn.Identity()
         else:
@@ -117,19 +122,20 @@ class BasicBlock(nn.Module):
                 nn.Conv2d(in_c, out_c, kernel_size=1, stride=1, bias=False), nn.BatchNorm2d(out_c)
             )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Forward pass through the basic block.
 
         Args:
             x: Input feature map
             t: Time conditioning tensor
+            y: Label conditioning tensor
 
         Returns:
             Output feature map
         """
         out = self.conv1(x)
         out = self.bn1(out)
-        out = F.relu(out + unsqueeze_as(self.mlp_time(t), x))
+        out = F.relu(out + unsqueeze_as(self.mlp_time(t), x) + unsqueeze_as(self.mlp_label(y), x))
         out = self.conv2(out)
         out = self.bn2(out)
         out = F.relu(out + self.shortcut(x))
@@ -178,11 +184,12 @@ class UNet(nn.Module):
     Simple implementation that closely mimics the one by Phil Wang (lucidrains).
     """
 
-    def __init__(self, in_dim: int, embed_dim: int, dim_scales: Tuple[int, ...]) -> None:
+    def __init__(self, in_dim: int, embed_dim: int, dim_scales: Tuple[int, ...], num_classes: int = 10) -> None:
         super().__init__()
 
         self.init_embed = nn.Conv2d(in_dim, embed_dim, 1)
         self.time_embed = PositionalEmbedding(embed_dim)
+        self.label_embed = nn.Embedding(num_classes, embed_dim)
 
         self.down_blocks = nn.ModuleList()
         self.up_blocks = nn.ModuleList()
@@ -201,8 +208,8 @@ class UNet(nn.Module):
             self.down_blocks.extend(
                 nn.ModuleList(
                     [
-                        BasicBlock(in_c, in_c, embed_dim),
-                        BasicBlock(in_c, in_c, embed_dim),
+                        BasicBlock(in_c, in_c, embed_dim, embed_dim),
+                        BasicBlock(in_c, in_c, embed_dim, embed_dim),
                         nn.Conv2d(in_c, out_c, 3, 2, 1) if not is_last else nn.Conv2d(in_c, out_c, 1),
                     ]
                 )
@@ -219,8 +226,8 @@ class UNet(nn.Module):
             self.up_blocks.extend(
                 nn.ModuleList(
                     [
-                        BasicBlock(in_c + skip_c, in_c, embed_dim),
-                        BasicBlock(in_c + skip_c, in_c, embed_dim),
+                        BasicBlock(in_c + skip_c, in_c, embed_dim, embed_dim),
+                        BasicBlock(in_c + skip_c, in_c, embed_dim, embed_dim),
                         nn.ConvTranspose2d(in_c, out_c, 2, 2) if not is_last else nn.Conv2d(in_c, out_c, 1),
                     ]
                 )
@@ -228,55 +235,57 @@ class UNet(nn.Module):
 
         self.mid_blocks = nn.ModuleList(
             [
-                BasicBlock(all_dims[-1], all_dims[-1], embed_dim),
+                BasicBlock(all_dims[-1], all_dims[-1], embed_dim, embed_dim),
                 SelfAttention2d(all_dims[-1]),
-                BasicBlock(all_dims[-1], all_dims[-1], embed_dim),
+                BasicBlock(all_dims[-1], all_dims[-1], embed_dim, embed_dim),
             ]
         )
         self.out_blocks = nn.ModuleList(
             [
-                BasicBlock(embed_dim, embed_dim, embed_dim),
+                BasicBlock(embed_dim, embed_dim, embed_dim, embed_dim),
                 nn.Conv2d(embed_dim, in_dim, 1, bias=True),
             ]
         )
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Forward pass through the UNet.
 
         Args:
             x: Input tensor of shape (batch, channels, height, width)
             t: Time conditioning tensor
+            y: Label conditioning tensor
 
         Returns:
             Output tensor of same shape as input
         """
         x = self.init_embed(x)
         t = self.time_embed(t)
+        y = self.label_embed(y)
         skip_conns = []
         residual = x.clone()
 
         for block in self.down_blocks:
             if isinstance(block, BasicBlock):
-                x = block(x, t)
+                x = block(x, t, y)
                 skip_conns.append(x)
             else:
                 x = block(x)
         for block in self.mid_blocks:
             if isinstance(block, BasicBlock):
-                x = block(x, t)
+                x = block(x, t, y)
             else:
                 x = block(x)
         for block in self.up_blocks:
             if isinstance(block, BasicBlock):
                 x = torch.cat((x, skip_conns.pop()), dim=1)
-                x = block(x, t)
+                x = block(x, t, y)
             else:
                 x = block(x)
 
         x = x + residual
         for block in self.out_blocks:
             if isinstance(block, BasicBlock):
-                x = block(x, t)
+                x = block(x, t, y)
             else:
                 x = block(x)
         return x
@@ -349,11 +358,12 @@ class DDIMModel(nn.Module):
         self.register_buffer("alpha_t", alpha_t)
         self.register_buffer("sigma_t", sigma_t)
 
-    def loss(self, x: torch.Tensor) -> torch.Tensor:
+    def loss(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Compute diffusion loss.
 
         Args:
             x: Input tensor of shape (batch, channels, height, width)
+            y: Label tensor of shape (batch,)
 
         Returns:
             Scalar loss tensor
@@ -362,18 +372,23 @@ class DDIMModel(nn.Module):
         t_sample = torch.randint(1, self.train_timesteps + 1, size=(B,), device=x.device)
         eps = torch.randn_like(x)
         x_t = self.alpha_t[t_sample] * x + self.sigma_t[t_sample] * eps
-        pred_target = self.nn_module(x_t, t_sample)
+        pred_x_0 = self.nn_module(x_t, t_sample, y)
 
         gt_target = x
 
-        loss = 0.5 * (gt_target - pred_target) ** 2
+        loss = 0.5 * (gt_target - pred_x_0) ** 2
         return loss.mean()  # type: ignore
 
     @torch.no_grad()
-    def sample(self, batch_size: int, device: str, sample_timesteps: int) -> torch.Tensor:
+    def sample(
+        self, batch_size: int, device: str, sample_timesteps: int, labels: torch.Tensor | None = None
+    ) -> torch.Tensor:
         """
         Args:
-            sample_timesteps: int. If unspecified, defaults to self.num_timesteps.
+            batch_size: Number of samples to generate
+            device: Device to generate on
+            sample_timesteps: Number of timesteps for sampling
+            labels: Optional labels to condition on. If None, generates random labels.
 
         Returns:
             samples: (num_sampling_timesteps + 1, bsz, *self.input_shape)
@@ -384,6 +399,11 @@ class DDIMModel(nn.Module):
         assert (
             1 <= sample_timesteps <= self.train_timesteps
         ), f"{sample_timesteps=} must be between 1 and {self.train_timesteps=}"
+
+        if labels is None:
+            labels = torch.randint(0, 10, (batch_size,), device=device)
+        else:
+            assert labels.shape[0] == batch_size, f"Expected {batch_size} labels, got {labels.shape[0]}"
 
         x = torch.randn((batch_size, *self.input_shape), device=device)
         t_start = torch.empty((batch_size,), dtype=torch.int64, device=device)
@@ -402,7 +422,7 @@ class DDIMModel(nn.Module):
             noise = torch.zeros_like(x) if scalar_t_end == 0 else torch.randn_like(x)
 
             gamma_t = 0.0
-            nn_out = self.nn_module(x, t_start)
+            nn_out = self.nn_module(x, t_start, labels)
             pred_x_0 = nn_out
             pred_eps = (x - self.alpha_t[t_start] * nn_out) / self.sigma_t[t_start]
 
@@ -411,7 +431,7 @@ class DDIMModel(nn.Module):
                 + (self.sigma_t[t_end] ** 2 - gamma_t**2).clamp(min=0) ** 0.5 * pred_eps
                 + (gamma_t * noise)
             )
-            samples[-1 - idx - 1] = x
+            samples[-1 - idx - 1] = pred_x_0
 
         return samples
 
@@ -422,7 +442,7 @@ def load_mnist_data() -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
     Returns:
         Tuple of (images, labels) where:
         - images: Preprocessed MNIST data as numpy array with shape (n_samples, 1, 32, 32)
-        - labels: One-hot encoded labels with shape (n_samples, 10)
+        - labels: Integer labels with shape (n_samples,)
     """
     # (7000, 784) dataset, no train-test split (validating via generations)
     x, labels = fetch_openml("mnist_784", version=1, return_X_y=True, as_frame=False, cache=True)
@@ -437,11 +457,10 @@ def load_mnist_data() -> Tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]:
     input_sd = np.full((1, 1, 32, 32), fill_value=127.5, dtype=np.float32)
     x = ((x - input_mean) / input_sd).astype(np.float32)
 
-    # convert string labels to integers and one-hot encode
-    labels_int = torch.from_numpy(labels.astype(int))
-    labels_onehot = F.one_hot(labels_int, num_classes=10).float()
+    # convert string labels to integers
+    labels_int = labels.astype(int)
 
-    return x, labels_onehot.numpy()
+    return x, labels_int
 
 
 class MNISTTrainer(SupervisedTrainer[MNISTConfig]):
@@ -464,6 +483,7 @@ class MNISTTrainer(SupervisedTrainer[MNISTConfig]):
             in_dim=1,
             embed_dim=self.config.model_channels,
             dim_scales=self.config.channel_mult,
+            num_classes=10,
         )
 
         return DDIMModel(
@@ -483,8 +503,9 @@ class MNISTTrainer(SupervisedTrainer[MNISTConfig]):
     def get_loss(self, model: nn.Module, batch: TensorTree) -> Tuple[torch.Tensor, torch.Tensor]:
         """Returns the diffusion loss."""
         images = batch["images"]
+        labels = batch["labels"]
         # model is a DDIMModel which has a loss method
-        loss = model.loss(images)  # type: ignore
+        loss = model.loss(images, labels)  # type: ignore
         return loss, images
 
     def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, Loggable]:
@@ -494,35 +515,40 @@ class MNISTTrainer(SupervisedTrainer[MNISTConfig]):
     def post_val_step(self, model: nn.Module) -> dict[str, Loggable]:
         """Post-validation step with image generation."""
         with torch.no_grad():
-            # generate samples for visualization
+            # generate samples for visualization with specific labels (0-9)
+            labels = torch.arange(10, device=self.config.device)
             samples = model.sample(  # type: ignore
-                batch_size=10, device=self.config.device, sample_timesteps=self.config.sample_timesteps
+                batch_size=10, device=self.config.device, sample_timesteps=self.config.sample_timesteps, labels=labels
             )
-            # get final generated samples (x_0) and arrange in a grid
-            final_samples = samples[0]  # first index is x_0
 
-            # create a grid of generated images (2x5)
-            grid_samples = final_samples[:10]  # take first 10 samples
-            # reshape to (2, 5, 1, 32, 32) and then to (2*32, 5*32)
-            grid = grid_samples.view(2, 5, 1, 32, 32)
-            grid = grid.permute(0, 2, 1, 3, 4)  # (2, 1, 5, 32, 32)
-            grid = grid.contiguous().view(2, 1, 5 * 32, 32)
-            grid = grid.permute(0, 2, 1, 3)  # (2, 5*32, 1, 32)
-            grid = grid.contiguous().view(2 * 5 * 32, 32)
-            grid = grid.unsqueeze(0)  # add batch dimension: (1, 2*5*32, 32)
+            output_tensor = None
+            for i in range(self.config.sample_timesteps + 1):
+                # get final generated samples (x_0) and arrange in a grid
+                final_samples = samples[i]  # first index is x_0
 
-            # convert to [0, 1] range for proper display
-            grid = (grid + 1) / 2  # convert from [-1, 1] to [0, 1]
-            grid = grid.clamp(0, 1)
+                # create a grid of generated images (1x10)
+                grid_samples = final_samples[:10]  # take first 10 samples
+                # reshape to (1, 10*32, 32) for horizontal layout
+                grid = grid_samples.view(10, 1, 32, 32)  # (10, 1, 32, 32)
+                grid = grid.permute(0, 2, 1, 3)  # (10, 32, 1, 32)
+                grid = grid.contiguous().view(10 * 32, 32)  # (10*32, 32)
+                grid = grid.unsqueeze(0)  # add batch dimension: (1, 10*32, 32)
 
-            return {"generated_samples": grid}
+                # convert to [0, 1] range for proper display
+                grid = (grid + 1) / 2  # convert from [-1, 1] to [0, 1]
+                grid = grid.clamp(0, 1)
+
+                output_tensor = torch.cat((output_tensor, grid), dim=2) if output_tensor is not None else grid
+
+            return {"generated_samples": output_tensor}
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
         """Training with random sampling from training data."""
         while True:
             indices = torch.randint(0, len(self.train_tensor), (self.config.batch_size,))
             batch_images = self.train_tensor[indices]
-            yield {"images": batch_images}
+            batch_labels = self.train_labels_tensor[indices]
+            yield {"images": batch_images, "labels": batch_labels}
 
     def get_val_dataloader(self) -> Iterable[TensorTree]:
         """Not validating by traditional MSE loss."""
@@ -531,10 +557,10 @@ class MNISTTrainer(SupervisedTrainer[MNISTConfig]):
 
 if __name__ == "__main__":
     config = MNISTConfig(
-        model_channels=128,
+        model_channels=64,
         channel_mult=(1, 2, 4, 8),
         train_timesteps=500,
-        sample_timesteps=50,
+        sample_timesteps=10,
         learning_rate=1e-3,
         weight_decay=0.0,
         image_size=32,
