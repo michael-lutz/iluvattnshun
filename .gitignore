@@ -7,4 +7,8 @@ __pycache__/
 *.egg-info/
 *.ipynb_checkpoints/
 *.vscode/
+*.pytest_cache/
+*.mypy_cache/
 
+*.coverage
+*.venv
