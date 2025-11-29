@@ -10,9 +10,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import LinearLR
 
+from iluvattnshun.logger import Loggable
 from iluvattnshun.nn import Dropout, TransformerLayer
 from iluvattnshun.prompter import PromptConfig, Prompter
-from iluvattnshun.trainer import Trainer, TrainerConfig
+from iluvattnshun.trainer import SupervisedTrainer, TrainerConfig
 from iluvattnshun.types import TensorTree
 
 MASK_TOKEN = "."
@@ -46,9 +47,7 @@ class WeightSharedTransformer(nn.Module):
         self.initial_layers = nn.ModuleList(
             [
                 TransformerLayer(d_model, 2, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp),
-                # TransformerLayer(
-                #     d_model, 1, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp
-                # ),
+                # TransformerLayer(d_model, 1, rope_base=rope_base, dropout_attn=dropout_attn, dropout_mlp=dropout_mlp),
             ]
         )
         self.weight_shared_layer = TransformerLayer(
@@ -88,8 +87,9 @@ class WeightSharedTransformer(nn.Module):
         attn_weights: list[torch.Tensor] | None = [] if return_attn_weights else None
         xs: list[torch.Tensor] | None = [x.clone()] if return_xs else None
 
-        layer_kv_cache = kv_cache[0] if kv_cache is not None else None
+        layer_idx = 0
         for i, layer in enumerate(self.initial_layers):
+            layer_kv_cache = kv_cache[layer_idx] if kv_cache is not None else None
             x, layer_kv_cache, layer_attn_weights = layer(
                 x,
                 layer_kv_cache,
@@ -103,8 +103,10 @@ class WeightSharedTransformer(nn.Module):
                 attn_weights.append(layer_attn_weights)
             if return_xs and xs is not None:
                 xs.append(x.clone())
+            layer_idx += 1
 
         for _ in range(self.n_layers - 1):
+            layer_kv_cache = kv_cache[layer_idx] if kv_cache is not None else None
             x, layer_kv_cache, layer_attn_weights = self.weight_shared_layer(
                 x,
                 layer_kv_cache,
@@ -118,6 +120,7 @@ class WeightSharedTransformer(nn.Module):
                 attn_weights.append(layer_attn_weights)
             if return_xs and xs is not None:
                 xs.append(x.clone())
+            layer_idx += 1
 
         logits: torch.Tensor = self.output(x)
         return logits, new_kv_cache, attn_weights, xs
@@ -303,7 +306,7 @@ class VariableRenamingPrompter(Prompter[VariableRenamingConfig]):
         return "".join([inverse_tokenization_map[token] for token in tokens])
 
 
-class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
+class VariableRenamingTrainer(SupervisedTrainer[VariableRenamingConfig]):
     """Training decoder-only transformer for variable renaming."""
 
     def init_state(self) -> None:
@@ -347,7 +350,7 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
         """Returns a basic Adam optimizer."""
         return optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
 
-    def get_scheduler(self, optimizer: optim.Optimizer) -> LinearLR | None:
+    def get_lr_scheduler(self, optimizer: optim.Optimizer) -> LinearLR | None:
         """Returns a learning rate scheduler."""
         if self.config.warmup_steps == 0:
             return None
@@ -384,43 +387,48 @@ class VariableRenamingTrainer(Trainer[VariableRenamingConfig]):
 
         return loss, logits
 
-    def val_metrics(self, model: nn.Module, batch: TensorTree, preds: torch.Tensor) -> dict[str, float | str]:
-        """Get additional validation metrics for a batch."""
-        predicted_answers = preds.argmax(dim=-1)  # (batch, seq)
-        target = batch["answer_tokens"].to(predicted_answers.device)  # (batch, seq)
-        mask = target != MASK_ID  # (batch, seq)
+    def val_step(self, model: nn.Module, batch: TensorTree) -> dict[str, Loggable]:
+        """Validation step with basic metrics."""
+        with torch.no_grad():
+            # compute loss and predictions
+            loss, preds = self.get_loss(model, batch)
 
-        correct = ((predicted_answers == target) & mask).float()
-        total_accuracy = correct.sum() / mask.sum()
+            predicted_answers = preds.argmax(dim=-1)  # (batch, seq)
+            target = batch["answer_tokens"].to(predicted_answers.device)  # (batch, seq)
+            mask = target != MASK_ID  # (batch, seq)
 
-        # Compute per-depth accuracy
-        depth_tensor = batch["depths"].to(predicted_answers.device)  # (batch, seq)
-        depth_metrics = {}
-        for depth_val in torch.unique(depth_tensor[mask]):
-            depth_mask = (depth_tensor == depth_val) & mask
-            correct_at_depth = ((predicted_answers == target) & depth_mask).float()
-            acc = correct_at_depth.sum() / depth_mask.sum()
-            depth_metrics[f"acc_per_depth/{int(depth_val)}"] = acc.item()
+            correct = ((predicted_answers == target) & mask).float()
+            total_accuracy = correct.sum() / mask.sum()
 
-        # Sample decoding info
-        sample_idx = 0
-        sample_prompt = batch["prompt"][sample_idx]
-        sample_answer = batch["answer"][sample_idx]
-        sample_pred_token_ids = predicted_answers[sample_idx].tolist()
-        predicted_answer = self.prompter.detokenize(sample_pred_token_ids)
-        correct_str = "".join(
-            "." if sample_answer[i] == MASK_TOKEN else "✓" if sample_answer[i] == predicted_answer[i] else "✗"
-            for i in range(len(sample_answer))
-        )
+            # Compute per-depth accuracy
+            depth_tensor = batch["depths"].to(predicted_answers.device)  # (batch, seq)
+            depth_metrics = {}
+            for depth_val in torch.unique(depth_tensor[mask]):
+                depth_mask = (depth_tensor == depth_val) & mask
+                correct_at_depth = ((predicted_answers == target) & depth_mask).float()
+                acc = correct_at_depth.sum() / depth_mask.sum()
+                depth_metrics[f"acc_per_depth/{int(depth_val)}"] = acc.item()
 
-        return {
-            "sample_prompt": sample_prompt,
-            "sample_answer": sample_answer,
-            "sample_pred": predicted_answer,
-            "sample_correct": correct_str,
-            "accuracy": total_accuracy.item(),
-            **depth_metrics,
-        }
+            # Sample decoding info
+            sample_idx = 0
+            sample_prompt = batch["prompt"][sample_idx]
+            sample_answer = batch["answer"][sample_idx]
+            sample_pred_token_ids = predicted_answers[sample_idx].tolist()
+            predicted_answer = self.prompter.detokenize(sample_pred_token_ids)
+            correct_str = "".join(
+                "." if sample_answer[i] == MASK_TOKEN else "✓" if sample_answer[i] == predicted_answer[i] else "✗"
+                for i in range(len(sample_answer))
+            )
+
+            return {
+                "loss": loss.item(),
+                "sample_prompt": sample_prompt,
+                "sample_answer": sample_answer,
+                "sample_pred": predicted_answer,
+                "sample_correct": correct_str,
+                "accuracy": total_accuracy.item(),
+                **depth_metrics,
+            }
 
     def get_train_dataloader(self) -> Iterable[TensorTree]:
         """Get the train dataloader."""
@@ -464,7 +472,7 @@ if __name__ == "__main__":
         num_epochs=1000,
         warmup_steps=4000,
         lr_start_factor=1e-3,  # results in 1e-7 starting lr
-        eval_every_n_samples=1_000_000,
+        eval_every_n_samples=100_000,
         log_every_n_seconds=3,
         dataset_path="data/var_rename",
         tensorboard_logdir="logs/var_rename",
