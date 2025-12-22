@@ -135,16 +135,16 @@ class RotaryEmbedding(torch.nn.Module):
         query: torch.Tensor,
         key: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        num_tokens = query.shape[0]
+        batch, num_tokens = query.shape[0], query.shape[1]
         cos, sin = self._compute_cos_sin(num_tokens)
 
         query_shape = query.shape
-        query = query.view(num_tokens, -1, self.head_dim)
+        query = query.view(batch, num_tokens, -1, self.head_dim)
         query = _apply_rotary_emb(query, cos, sin)
         query = query.reshape(query_shape)
 
         key_shape = key.shape
-        key = key.view(num_tokens, -1, self.head_dim)
+        key = key.view(batch, num_tokens, -1, self.head_dim)
         key = _apply_rotary_emb(key, cos, sin)
         key = key.reshape(key_shape)
         return query, key
@@ -152,25 +152,25 @@ class RotaryEmbedding(torch.nn.Module):
 
 def sdpa(Q, K, V, S, sm_scale, sliding_window=0):
     # sliding_window == 0 means no sliding window
-    n_tokens, n_heads, q_mult, d_head = Q.shape
-    assert K.shape == (n_tokens, n_heads, d_head)
-    assert V.shape == (n_tokens, n_heads, d_head)
-    K = K[:, :, None, :].expand(-1, -1, q_mult, -1)
-    V = V[:, :, None, :].expand(-1, -1, q_mult, -1)
-    S = S.reshape(n_heads, q_mult, 1, 1).expand(-1, -1, n_tokens, -1)
+    batch, n_tokens, n_heads, q_mult, d_head = Q.shape
+    assert K.shape == (batch, n_tokens, n_heads, d_head)
+    assert V.shape == (batch, n_tokens, n_heads, d_head)
+    K = K[:, :, :, None, :].expand(-1, -1, -1, q_mult, -1)
+    V = V[:, :, :, None, :].expand(-1, -1, -1, q_mult, -1)
+    S = S.reshape(1, n_heads, q_mult, 1, 1).expand(batch, -1, -1, n_tokens, -1)
     mask = torch.triu(Q.new_full((n_tokens, n_tokens), -float("inf")), diagonal=1)
     if sliding_window > 0:
         mask += torch.tril(
             mask.new_full((n_tokens, n_tokens), -float("inf")), diagonal=-sliding_window
         )
-    QK = torch.einsum("qhmd,khmd->hmqk", Q, K)
+    QK = torch.einsum("bqhmd,bkhmd->bhmqk", Q, K)
     QK *= sm_scale
-    QK += mask[None, None, :, :]
+    QK += mask[None, None, None, :, :]
     QK = torch.cat([QK, S], dim=-1)
     W = torch.softmax(QK, dim=-1)
     W = W[..., :-1]
-    attn = torch.einsum("hmqk,khmd->qhmd", W, V)
-    return attn.reshape(n_tokens, -1)
+    attn = torch.einsum("bhmqk,bkhmd->bqhmd", W, V)
+    return attn.reshape(batch, n_tokens, -1)
 
 
 class AttentionBlock(torch.nn.Module):
@@ -215,10 +215,12 @@ class AttentionBlock(torch.nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch, n_tokens = x.shape[0], x.shape[1]
         t = self.norm(x)
         qkv = self.qkv(t)
-        q = qkv[:, : self.num_attention_heads * self.head_dim].contiguous()
+        q = qkv[:, :, : self.num_attention_heads * self.head_dim].contiguous()
         k = qkv[
+            :,
             :,
             self.num_attention_heads
             * self.head_dim : (self.num_attention_heads + self.num_key_value_heads)
@@ -226,19 +228,21 @@ class AttentionBlock(torch.nn.Module):
         ].contiguous()
         v = qkv[
             :,
+            :,
             (self.num_attention_heads + self.num_key_value_heads)
             * self.head_dim : (self.num_attention_heads + 2 * self.num_key_value_heads)
             * self.head_dim,
         ].contiguous()
 
         q = q.view(
-            -1,
+            batch,
+            n_tokens,
             self.num_key_value_heads,
             self.num_attention_heads // self.num_key_value_heads,
             self.head_dim,
         )
-        k = k.view(-1, self.num_key_value_heads, self.head_dim)
-        v = v.view(-1, self.num_key_value_heads, self.head_dim)
+        k = k.view(batch, n_tokens, self.num_key_value_heads, self.head_dim)
+        v = v.view(batch, n_tokens, self.num_key_value_heads, self.head_dim)
         q, k = self.rope(q, k)
         t = sdpa(q, k, v, self.sinks, self.sm_scale, self.sliding_window)
         t = self.out(t)
@@ -310,28 +314,37 @@ class MLPBlock(torch.nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch, n_tokens = x.shape[0], x.shape[1]
         t = self.norm(x)
         g = self.gate(t)
         experts = torch.topk(g, k=self.experts_per_token, dim=-1, sorted=True)
-        expert_weights = torch.nn.functional.softmax(experts.values, dim=1)
+        expert_weights = torch.nn.functional.softmax(experts.values, dim=-1)
         expert_indices = experts.indices
 
+        # Reshape for expert processing: (batch, n_tokens) -> (batch * n_tokens)
+        t_flat = t.reshape(batch * n_tokens, -1)
+        expert_indices_flat = expert_indices.reshape(batch * n_tokens, -1)
+        expert_weights_flat = expert_weights.reshape(batch * n_tokens, -1)
+
         # MLP #1
-        mlp1_weight = self.mlp1_weight[expert_indices, ...]
-        mlp1_bias = self.mlp1_bias[expert_indices, ...]
-        t = torch.einsum("beck,bk->bec", mlp1_weight, t) + mlp1_bias
-        t = swiglu(t, limit=self.swiglu_limit)
+        mlp1_weight = self.mlp1_weight[expert_indices_flat, ...]
+        mlp1_bias = self.mlp1_bias[expert_indices_flat, ...]
+        t_flat = torch.einsum("beck,bk->bec", mlp1_weight, t_flat) + mlp1_bias
+        t_flat = swiglu(t_flat, limit=self.swiglu_limit)
 
         # MLP #2
-        mlp2_weight = self.mlp2_weight[expert_indices, ...]
-        mlp2_bias = self.mlp2_bias[expert_indices, ...]
-        t = torch.einsum("beck,bek->bec", mlp2_weight, t)
+        mlp2_weight = self.mlp2_weight[expert_indices_flat, ...]
+        mlp2_bias = self.mlp2_bias[expert_indices_flat, ...]
+        t_flat = torch.einsum("beck,bek->bec", mlp2_weight, t_flat)
         if self.world_size > 1:
-            dist.all_reduce(t, op=dist.ReduceOp.SUM)
-        t += mlp2_bias
+            dist.all_reduce(t_flat, op=dist.ReduceOp.SUM)
+        t_flat += mlp2_bias
 
         # Weighted sum of experts
-        t = torch.einsum("bec,be->bc", t, expert_weights)
+        t_flat = torch.einsum("bec,be->bc", t_flat, expert_weights_flat)
+
+        # Reshape back: (batch * n_tokens, channels) -> (batch, n_tokens, channels)
+        t = t_flat.reshape(batch, n_tokens, -1)
 
         return x + t
 
@@ -457,7 +470,9 @@ class TokenGenerator:
         tokens = list(prompt_tokens)
         num_generated_tokens = 0
         while max_tokens == 0 or num_generated_tokens < max_tokens:
-            logits = self.model(torch.as_tensor(tokens, dtype=torch.int32, device=self.device))[-1]
+            # Add batch dimension: shape (seq_len,) -> (1, seq_len)
+            input_ids = torch.as_tensor([tokens], dtype=torch.int32, device=self.device)
+            logits = self.model(input_ids)[0, -1]  # Get last token logits from batch 0
             if temperature == 0.0:
                 predicted_token = torch.argmax(logits, dim=-1).item()
             else:

@@ -8,8 +8,10 @@ from pathlib import Path
 from model.model import ModelConfig, Transformer
 from model.tokenizer import get_tokenizer
 
+_PATH_TO_CHECKPOINT = "/home/ubuntu/michael-base/iluvattnshun/weights/gpt-oss-20b/original"
+
 def main():
-    checkpoint_path = sys.argv[1] if len(sys.argv) > 1 else "../../weights/gpt-oss-20b/original"
+    checkpoint_path = sys.argv[1] if len(sys.argv) > 1 else _PATH_TO_CHECKPOINT
     
     print("="*70)
     print("GPT-OSS-20B Model Loading and Inference Test")
