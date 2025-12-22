@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(pwd:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(awk:*)",
+      "Bash(sed:*)",
+      "Bash(tree:*)",
+      "Bash(du:*)",
+      "Bash(df:*)",
+      
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(cp:*)",
+
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(pip:*)",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(npx:*)",
+      "Bash(cargo:*)",
+      "Bash(go:*)",
+      "Bash(javac:*)",
+      "Bash(java:*)",
+
+      "Edit(./**)"
+    ],
+
+    "ask": [
+      "Bash(rm:*)",
+      "Bash(mv:*)",
+      "Bash(chmod:*)",
+      "Bash(chown:*)",
+      "Bash(truncate:*)",
+      "Bash(dd:*)",
+
+      "Bash(curl:*)",
+      "Bash(wget:*)"
+    ],
+
+    "deny": [
+      "Bash(git:*)",
+      "Bash(sudo:*)",
+      "Bash(systemctl:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)",
+      "WebFetch"
+    ]
+  },
+
+  "defaultMode": "acceptEdits",
+
+  "sandbox": {
+    "enabled": true,
+    "autoAllowBashIfSandboxed": true
+  }
+}
